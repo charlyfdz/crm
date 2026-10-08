@@ -13,6 +13,11 @@ bun run db:migrate && bun run db:seed
 bun run dev                 # app :3000, api :3001, agent :2000
 ```
 
+For an isolated local sign-in test, set `CRM_LOCAL_DEMO_AUTH="1"` in the root
+`.env.local` and keep `ALLOWED_SIGN_IN` restricted to a synthetic test address.
+Email/password works only in development, and the API binds to `127.0.0.1`.
+The local form sends no verification email. Remove the flag before any hosted run.
+
 Prisma from the repo root: `db:generate`, `db:migrate`, `db:push`, `db:reset`,
 `db:seed`, `db:studio`, `db:deploy`.
 

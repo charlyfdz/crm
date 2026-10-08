@@ -78,7 +78,10 @@ export const auth = betterAuth({
 	}),
 
 	emailAndPassword: {
-		enabled: false,
+		enabled: env.localDemoAuth,
+		autoSignIn: true,
+		minPasswordLength: 8,
+		requireEmailVerification: false,
 	},
 
 	socialProviders,

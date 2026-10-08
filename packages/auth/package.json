@@ -7,6 +7,7 @@
 		".": "./src/index.ts",
 		"./client": "./src/client.ts",
 		"./cookies": "./src/cookies.ts",
+		"./local-demo-auth": "./src/local-demo-auth.ts",
 		"./scopes": "./src/scopes.ts",
 		"./workspace": "./src/workspace.ts"
 	},

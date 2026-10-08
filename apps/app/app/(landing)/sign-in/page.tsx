@@ -1,3 +1,4 @@
+import { isLocalDemoAuthEnabled } from "@crm/auth/local-demo-auth";
 import type { MailboxProviderId } from "@crm/auth/scopes";
 import type { Metadata } from "next";
 import { redirect, unstable_rethrow } from "next/navigation";
@@ -5,6 +6,7 @@ import { Suspense } from "react";
 import { AuthHeading, AuthShell } from "@/components/auth-shell";
 import { getSession } from "@/lib/session";
 import { getServerQueryClient, getServerTrpc } from "@/lib/trpc/server";
+import { LocalDemoSignIn } from "./local-demo-sign-in";
 import { SocialSignIn } from "./social-sign-in";
 import { type SsoProvider, SsoSignIn } from "./sso-sign-in";
 
@@ -60,14 +62,27 @@ export default function SignInPage({ searchParams }: PageProps<"/sign-in">) {
 async function SignIn({
 	searchParams,
 }: Pick<PageProps<"/sign-in">, "searchParams">) {
+	const localDemoAuth = isLocalDemoAuthEnabled();
 	const [session, options, { method }] = await Promise.all([
 		currentSession(),
-		signInOptions(),
+		localDemoAuth ? Promise.resolve(null) : signInOptions(),
 		searchParams,
 	]);
 
 	if (session) {
 		redirect("/");
+	}
+
+	if (localDemoAuth) {
+		return (
+			<>
+				<AuthHeading
+					title="Acceso local de prueba"
+					description="Crea una cuenta local o inicia sesión. No se contacta a Google ni se envía correo."
+				/>
+				<LocalDemoSignIn />
+			</>
+		);
 	}
 
 	const configured: MailboxProviderId[] = [];

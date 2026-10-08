@@ -52,6 +52,12 @@ list, read by the sign-in guard *and* the sync's "which side is external" decisi
 if they drifted a colleague would be refused at the door or filed as a lead. **An empty
 list fails closed.** Parsed on demand. `packages/auth/src/workspace.ts`.
 
+**`CRM_LOCAL_DEMO_AUTH="1"`** enables email/password sign-up only when
+`NODE_ENV="development"`. The API then binds to `127.0.0.1`. Accounts still need to
+match `ALLOWED_SIGN_IN`; the local demo does not send verification email. The flag
+has no effect in production, tests, or any other environment. Keep it unset outside
+an isolated local development run.
+
 ## Where things are
 
 - **`API_URL`** (`:3001`) mints session cookies and serves `/api/auth/*`;

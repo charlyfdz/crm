@@ -1,4 +1,5 @@
 import "@crm/env/load";
+import { isLocalDemoAuthEnabled } from "./local-demo-auth";
 
 const DEFAULT_API_URL = "http://localhost:3001";
 const DEFAULT_APP_URL = "http://localhost:3000";
@@ -59,6 +60,7 @@ const appUrl = appUrls[0] ?? DEFAULT_APP_URL;
 export const env = {
 	apiUrl,
 	appUrl,
+	localDemoAuth: isLocalDemoAuthEnabled(),
 	google: googleCredentials(),
 	microsoft: microsoftCredentials(),
 	slack: slackCredentials(),

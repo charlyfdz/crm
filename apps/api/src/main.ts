@@ -1,3 +1,4 @@
+import { isLocalDemoAuthEnabled } from "@crm/auth/local-demo-auth";
 import { Logger } from "@nestjs/common";
 import { createApp } from "./create-app";
 
@@ -6,10 +7,16 @@ async function bootstrap() {
 	app.enableShutdownHooks();
 
 	const port = process.env.PORT ?? 3001;
-	await app.listen(port);
+	const localDemoAuth = isLocalDemoAuthEnabled();
+	const host = localDemoAuth ? "127.0.0.1" : "localhost";
+	if (localDemoAuth) {
+		await app.listen(port, host);
+	} else {
+		await app.listen(port);
+	}
 
 	new Logger("Bootstrap").log({
-		message: `API listening on http://localhost:${port}`,
+		message: `API listening on http://${host}:${port}`,
 		port: Number(port),
 		environment: process.env.NODE_ENV ?? "development",
 	});
