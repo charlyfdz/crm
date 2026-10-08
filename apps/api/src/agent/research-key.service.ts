@@ -1,3 +1,4 @@
+import { aiFeaturePolicy } from "@crm/env/features";
 import { Injectable, Logger } from "@nestjs/common";
 import { z } from "zod";
 import { bridge } from "./bridge";
@@ -14,7 +15,8 @@ const verifyAnswer = z
 export type KeyCheck =
 	| { outcome: "valid" }
 	| { outcome: "invalid"; reason: string }
-	| { outcome: "unknown"; reason: string };
+	| { outcome: "unknown"; reason: string }
+	| { outcome: "disabled"; code: "CRM_AI_DISABLED"; reason: string };
 
 /**
  * Checking a Context key means calling Context, and a vendor client in this
@@ -27,6 +29,10 @@ export class ResearchKeyService {
 	private readonly logger = new Logger(ResearchKeyService.name);
 
 	async verify(apiKey: string): Promise<KeyCheck> {
+		const policy = aiFeaturePolicy();
+		if (!policy.enabled) {
+			return { outcome: "disabled", code: policy.code, reason: policy.reason };
+		}
 		const agent = bridge();
 
 		if (!agent) {

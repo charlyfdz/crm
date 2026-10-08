@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "service": "crm-corporativo",
+  "company": "Corporativo S&F",
+  "infrastructureOwner": "Personal-Carlos",
+  "target": "homelab/paas-control/Coolify",
+  "deploymentAuthorized": false,
+  "approvalEvidence": "",
+  "exposure": "private-https-tailnet",
+  "lifecycleAccepted": false,
+  "origins": { "app": null, "api": null, "cookieDomain": null },
+  "checks": {
+    "completeVersion": "pending",
+    "businessAcceptance": "pending",
+    "security": "pending",
+    "containerBuild": "pending",
+    "containerSmoke": "pending",
+    "restoreSmoke": "pending",
+    "filesBackup": "pending",
+    "privateHttps": "pending",
+    "effectiveLimits": "pending",
+    "rollback": "pending"
+  },
+  "capacity": {
+    "recordedAt": null,
+    "synthetic": null,
+    "evidence": "",
+    "otherNoncoreMemoryBytes": null,
+    "otherNoncoreCpuLimits": null,
+    "guestFreeGiB": null,
+    "projectedHostFreeGiB": null
+  },
+  "backup": {
+    "restoreVerified": false,
+    "locationEvidence": "",
+    "rpo": "",
+    "rto": "",
+    "usesRejectedDisk": false,
+    "sameHostContingencyIsOffsite": false
+  }
+}

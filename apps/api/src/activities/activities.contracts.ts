@@ -24,6 +24,10 @@ const ALL_ACTIVITY_TYPES = [
 
 const activityTypeOutput = z.enum(ALL_ACTIVITY_TYPES);
 
+const recordId = z.string().trim().min(1).max(120);
+const instant = z.iso.datetime({ offset: true });
+const taskPriority = z.number().int().min(0).max(3);
+
 const TIMELINE_FILTERS = [
 	"all",
 	"history",
@@ -37,9 +41,9 @@ const TIMELINE_FILTERS = [
 export type TimelineFilter = (typeof TIMELINE_FILTERS)[number];
 
 export const timelineInput = z.object({
-	companyId: z.string().optional(),
-	contactId: z.string().optional(),
-	dealId: z.string().optional(),
+	companyId: recordId.optional(),
+	contactId: recordId.optional(),
+	dealId: recordId.optional(),
 	filter: z.enum(TIMELINE_FILTERS).default("all"),
 	cursor: z.string().optional(),
 	limit: z.number().int().min(1).max(100).default(30),
@@ -48,22 +52,25 @@ export const timelineInput = z.object({
 export type TimelineInput = z.infer<typeof timelineInput>;
 
 export const timelineCountsInput = z.object({
-	companyId: z.string().optional(),
-	contactId: z.string().optional(),
-	dealId: z.string().optional(),
+	companyId: recordId.optional(),
+	contactId: recordId.optional(),
+	dealId: recordId.optional(),
 });
 
 export const activityCreateInput = z
 	.object({
 		type: composableEnum,
-		subject: z.string().trim().optional(),
-		body: z.string().trim().optional(),
-		occurredAt: z.string().optional(),
-		dueAt: z.string().nullable().optional(),
-		companyId: z.string().optional(),
-		contactId: z.string().optional(),
-		dealId: z.string().optional(),
+		subject: z.string().trim().max(500).optional(),
+		body: z.string().trim().max(10000).optional(),
+		occurredAt: instant.optional(),
+		dueAt: instant.nullable().optional(),
+		companyId: recordId.optional(),
+		contactId: recordId.optional(),
+		dealId: recordId.optional(),
+		assigneeId: recordId.optional(),
+		priority: taskPriority.optional(),
 	})
+	.strict()
 	.refine((input) => input.companyId || input.contactId || input.dealId, {
 		message: "An activity has to be about a company, a contact or a deal.",
 	})
@@ -73,17 +80,47 @@ export const activityCreateInput = z
 			message: "A task needs a subject — it is the thing to do.",
 			path: ["subject"],
 		},
+	)
+	.refine(
+		(input) =>
+			input.type === ActivityType.TASK ||
+			(input.assigneeId === undefined &&
+				input.priority === undefined &&
+				input.dueAt === undefined),
+		{ message: "Assignment, priority and deadline apply only to tasks." },
 	);
 
 export type ActivityCreateInput = z.infer<typeof activityCreateInput>;
 
-export const completeInput = z.object({
-	id: z.string(),
-	completed: z.boolean().default(true),
-});
+export const completeInput = z
+	.object({
+		id: recordId,
+		completed: z.boolean().default(true),
+	})
+	.strict();
+
+export const taskUpdateInput = z
+	.object({
+		id: recordId,
+		subject: z.string().trim().min(1).max(500).optional(),
+		body: z.string().trim().max(10000).nullable().optional(),
+		dueAt: instant.nullable().optional(),
+		assigneeId: recordId.optional(),
+		priority: taskPriority.optional(),
+	})
+	.strict()
+	.refine(
+		(input) =>
+			Object.entries(input).some(
+				([key, value]) => key !== "id" && value !== undefined,
+			),
+		{ message: "Select at least one task field to change." },
+	);
+
+export type TaskUpdateInput = z.infer<typeof taskUpdateInput>;
 
 export const myTasksInput = z.object({
-	window: z.enum(["overdue", "upcoming", "all"]).default("all"),
+	window: z.enum(["overdue", "upcoming", "all", "completed"]).default("all"),
 	limit: z.number().int().min(1).max(100).default(25),
 });
 
@@ -149,6 +186,8 @@ export const activityEntryOutput = z.object({
 	meta: activityMeta,
 	createdAt: z.string(),
 	createdBy: activityAuthorOutput,
+	assignee: activityAuthorOutput.nullable(),
+	priority: taskPriority,
 	company: activityCompanyRefOutput,
 	contact: activityContactRefOutput,
 	deal: activityDealRefOutput,
@@ -181,3 +220,5 @@ export const myTasksOutput = z.array(activityEntryOutput);
 export const activityCreateOutput = activityEntryOutput;
 
 export const completeOutput = activityEntryOutput;
+
+export const taskUpdateOutput = activityEntryOutput;

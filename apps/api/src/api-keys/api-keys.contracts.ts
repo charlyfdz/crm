@@ -10,8 +10,7 @@ export const createApiKeyInput = z.object({
 		.number()
 		.int()
 		.min(API_KEY_EXPIRATION.minDays)
-		.max(API_KEY_EXPIRATION.maxDays)
-		.nullable(),
+		.max(API_KEY_EXPIRATION.maxDays),
 });
 
 export const revokeApiKeyInput = z.object({

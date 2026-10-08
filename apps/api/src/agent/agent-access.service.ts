@@ -38,6 +38,7 @@ export class AgentAccessService {
 			FROM "member"
 			WHERE "organizationId" = ${WORKSPACE_ID}
 				AND "userId" = ${userId}
+				AND "suspendedAt" IS NULL
 			FOR SHARE
 		`;
 
@@ -46,6 +47,8 @@ export class AgentAccessService {
 		}
 
 		const role = toWorkspaceRole(member.role);
+		if (!role)
+			throw new ForbiddenException("No supported active workspace role.");
 		const agent = await tx.agentDefinition.findFirst({
 			where: { id: agentId, status: { not: "DELETED" } },
 			select: {

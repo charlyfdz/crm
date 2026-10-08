@@ -7,6 +7,7 @@ import {
 	it,
 } from "bun:test";
 import { db, type FieldEntity } from "@crm/db";
+import { isAiEnabled } from "@crm/env/features";
 import { AgentQueueService } from "../src/agent/agent-queue.service";
 import { AgentTriggerService } from "../src/agent/agent-trigger.service";
 import { CompaniesService } from "../src/companies/companies.service";
@@ -18,6 +19,10 @@ import { ConversionService } from "../src/currency/conversion.service";
 import { DealsService } from "../src/deals/deals.service";
 import { FieldsService } from "../src/fields/fields.service";
 import { withDiscardedCrmEvents } from "./agent-trigger.stub";
+import {
+	addFixtureMember,
+	closeFixtureClient,
+} from "./disposable-deal-regression";
 
 const suffix = process.env.TEST_RUN_ID ?? "fields-spec";
 const domain = `fields-${suffix}.test`;
@@ -109,7 +114,7 @@ async function clean() {
 
 async function makeCompany(name: string): Promise<string> {
 	const company = await db.company.create({
-		data: { name: `${name} ${suffix}`, domain: `${name}-${domain}` },
+		data: { name: `${name} ${suffix}`, domain: `${name}-${domain}`, ownerId },
 		select: { id: true },
 	});
 
@@ -125,6 +130,7 @@ beforeAll(async () => {
 	await db.user.create({
 		data: { id: ownerId, name: "Fields Rep", email: `rep@${domain}` },
 	});
+	await addFixtureMember(db, ownerId);
 
 	companyId = await makeCompany("fields-co");
 });
@@ -137,6 +143,7 @@ afterAll(async () => {
 	} else {
 		process.env.AGENT_BRIDGE_SECRET = bridgeSecret;
 	}
+	await closeFixtureClient();
 });
 
 beforeEach(() => {
@@ -144,7 +151,7 @@ beforeEach(() => {
 });
 
 describe("field definitions", () => {
-	it("derives a key from the label and queues a backfill", async () => {
+	it("derives a key from the label and respects the AI backfill switch", async () => {
 		const field = await fields.create({
 			entity: "COMPANY",
 			label: "Spec runs on",
@@ -163,13 +170,17 @@ describe("field definitions", () => {
 			"AWS",
 			"Azure",
 		]);
-		expect(queued).toHaveLength(1);
-		expect(queued[0]).toMatchObject({
-			entity: "COMPANY",
-			keys: ["spec_runs_on"],
-			reason: "New field: Spec runs on",
-		});
-		expect(queued[0]?.ids).toContain(companyId);
+		if (isAiEnabled()) {
+			expect(queued).toHaveLength(1);
+			expect(queued[0]).toMatchObject({
+				entity: "COMPANY",
+				keys: ["spec_runs_on"],
+				reason: "New field: Spec runs on",
+			});
+			expect(queued[0]?.ids).toContain(companyId);
+		} else {
+			expect(queued).toHaveLength(0);
+		}
 	});
 
 	it("refuses a duplicate key", async () => {
@@ -531,11 +542,15 @@ describe("a record update that fails", () => {
 
 		let refused: Error | null = null;
 		try {
-			await companies.update(record, {
-				name: "Renamed",
-				ownerId: `nobody-${suffix}`,
-				fields: { spec_seats: "99" },
-			});
+			await companies.update(
+				record,
+				{
+					name: "Renamed",
+					ownerId: `nobody-${suffix}`,
+					fields: { spec_seats: "99" },
+				},
+				ownerId,
+			);
 		} catch (cause) {
 			refused = cause as Error;
 		}
@@ -563,16 +578,21 @@ describe("a record update that fails", () => {
 				firstName: "Ada",
 				email: `ada@${domain}`,
 				companyId,
+				ownerId,
 			},
 			select: { id: true },
 		});
 
 		let refused: Error | null = null;
 		try {
-			await contacts.update(contact.id, {
-				companyId: `nobody-${suffix}`,
-				fields: { spec_note: "Reads the docs" },
-			});
+			await contacts.update(
+				contact.id,
+				{
+					companyId: `nobody-${suffix}`,
+					fields: { spec_note: "Reads the docs" },
+				},
+				ownerId,
+			);
 		} catch (cause) {
 			refused = cause as Error;
 		}
@@ -604,10 +624,14 @@ describe("a record update that fails", () => {
 
 		let refused: Error | null = null;
 		try {
-			await deals.update(deal.id, {
-				companyId: `nobody-${suffix}`,
-				fields: { spec_risk: "Champion left" },
-			});
+			await deals.update(
+				deal.id,
+				{
+					companyId: `nobody-${suffix}`,
+					fields: { spec_risk: "Champion left" },
+				},
+				ownerId,
+			);
 		} catch (cause) {
 			refused = cause as Error;
 		}
@@ -615,14 +639,18 @@ describe("a record update that fails", () => {
 
 		expect(await db.fieldValue.count({ where: { dealId: deal.id } })).toBe(0);
 
-		await deals.update(deal.id, { fields: { spec_risk: "Champion left" } });
+		await deals.update(
+			deal.id,
+			{ fields: { spec_risk: "Champion left" } },
+			ownerId,
+		);
 
 		expect(await db.fieldValue.count({ where: { dealId: deal.id } })).toBe(1);
 	});
 });
 
-describe("queueing a backfill", () => {
-	it("targets the record, and merges a second field into the same pending task", async () => {
+describe("the AI backfill switch", () => {
+	it("gates record targeting and repeated backfill requests", async () => {
 		const trigger = new AgentTriggerService(db);
 		const otherCompanyId = await makeCompany("fields-co-2");
 
@@ -632,7 +660,7 @@ describe("queueing a backfill", () => {
 			[companyId, otherCompanyId],
 			"New field",
 		);
-		expect(first).toEqual({ queued: 2, merged: 0 });
+		expect(first).toEqual({ queued: isAiEnabled() ? 2 : 0, merged: 0 });
 
 		const second = await trigger.fieldBackfillRecords(
 			"COMPANY",
@@ -640,7 +668,7 @@ describe("queueing a backfill", () => {
 			[companyId],
 			"New field",
 		);
-		expect(second).toEqual({ queued: 0, merged: 1 });
+		expect(second).toEqual({ queued: 0, merged: isAiEnabled() ? 1 : 0 });
 
 		const tasks = await db.agentTask.findMany({
 			where: {
@@ -650,15 +678,17 @@ describe("queueing a backfill", () => {
 			select: { companyId: true, payload: true },
 		});
 
-		expect(tasks).toHaveLength(2);
-		const mine = tasks.find((task) => task.companyId === companyId);
-		expect(mine?.payload).toEqual({
-			entity: "COMPANY",
-			keys: ["spec_website", "spec_segment"],
-		});
+		expect(tasks).toHaveLength(isAiEnabled() ? 2 : 0);
+		if (isAiEnabled()) {
+			const mine = tasks.find((task) => task.companyId === companyId);
+			expect(mine?.payload).toEqual({
+				entity: "COMPANY",
+				keys: ["spec_website", "spec_segment"],
+			});
+		}
 	});
 
-	it("keeps a company's field apart from a contact's field with the same key", async () => {
+	it("gates contact backfills without fabricating a company task", async () => {
 		const trigger = new AgentTriggerService(db);
 		const contact = await db.contact.create({
 			data: { firstName: "Backfill", email: `backfill@${domain}`, companyId },
@@ -677,10 +707,11 @@ describe("queueing a backfill", () => {
 			select: { payload: true },
 		});
 
-		expect(tasks).toHaveLength(1);
-		expect(tasks[0]?.payload).toEqual({
-			entity: "CONTACT",
-			keys: ["spec_website"],
-		});
+		expect(tasks).toHaveLength(isAiEnabled() ? 1 : 0);
+		if (isAiEnabled())
+			expect(tasks[0]?.payload).toEqual({
+				entity: "CONTACT",
+				keys: ["spec_website"],
+			});
 	});
 });

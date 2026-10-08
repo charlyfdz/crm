@@ -9,7 +9,9 @@ import {
 	writeArchiveRetentionDays,
 	writeContextDevKey,
 } from "@crm/db/settings";
+import { aiFeaturePolicy, isAiEnabled } from "@crm/env/features";
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
+import { requireApiAiEnabled } from "../agent/ai-policy";
 import { ResearchKeyService } from "../agent/research-key.service";
 import { BackfillService } from "../backfill/backfill.service";
 import { InjectDatabase } from "../database/database.constants";
@@ -48,6 +50,7 @@ export class SettingsService {
 	}
 
 	async setAgentModel(modelId: string | null): Promise<AgentModelSettings> {
+		requireApiAiEnabled();
 		if (modelId === null) {
 			await writeAgentModel(this.db, null);
 			this.logger.log({ message: "Agent model reset to the default" });
@@ -88,11 +91,17 @@ export class SettingsService {
 	async researchKey(): Promise<ResearchKeySettings> {
 		const key = await readContextDevKey(this.db);
 
-		return { configured: key !== null, hint: key ? maskKey(key) : null };
+		return {
+			configured: key !== null,
+			hint: key ? maskKey(key) : null,
+			ai: aiFeaturePolicy(),
+		};
 	}
 
 	async setResearchKey(apiKey: string): Promise<ResearchKeySettings> {
+		requireApiAiEnabled();
 		const check = await this.researchKeys.verify(apiKey);
+		requireApiAiEnabled();
 
 		if (check.outcome === "invalid") {
 			throw new BadRequestException(check.reason);
@@ -104,6 +113,7 @@ export class SettingsService {
 			message: "Context key saved",
 			verified: check.outcome === "valid",
 		});
+		if (!isAiEnabled()) return this.researchKey();
 
 		// Every company added while there was no key is still PENDING, because a
 		// brand task with nowhere to look leaves the record alone. The sign-in

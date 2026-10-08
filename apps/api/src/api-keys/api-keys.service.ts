@@ -1,6 +1,13 @@
-import { auth, DAY_SECONDS } from "@crm/auth";
+import {
+	auth,
+	DAY_SECONDS,
+	isWorkspaceAdmin,
+	WORKSPACE_ID,
+	workspaceRoleOf,
+} from "@crm/auth";
 import type { Db, Prisma } from "@crm/db";
 import {
+	ForbiddenException,
 	HttpException,
 	Injectable,
 	InternalServerErrorException,
@@ -72,6 +79,7 @@ export class ApiKeysService {
 		userId: string,
 		input: ApiKeyListInput,
 	): Promise<ListResult<ApiKeySummary>> {
+		await this.assertManager(userId);
 		const where = this.searchWhere(userId, input.q);
 		const { skip, take } = paginate(input);
 
@@ -94,18 +102,35 @@ export class ApiKeysService {
 		headers: Headers,
 		input: CreateApiKeyInput,
 	): Promise<CreatedApiKey> {
+		await this.assertManager(userId);
 		const created = await this.call(() =>
 			auth.api.createApiKey({
 				headers,
 				body: {
 					name: input.name,
-					expiresIn:
-						input.expiresInDays === null
-							? null
-							: input.expiresInDays * DAY_SECONDS,
+					expiresIn: input.expiresInDays * DAY_SECONDS,
 				},
 			}),
 		);
+		const allowed = await this.db.$transaction(async (tx) => {
+			await tx.$queryRaw`SELECT id FROM "member" WHERE "organizationId" = ${WORKSPACE_ID} AND "userId" = ${userId} FOR SHARE`;
+			const role = await workspaceRoleOf(userId, tx);
+			const key = await tx.apikey.findUnique({
+				where: { id: created.id },
+				select: { referenceId: true, enabled: true },
+			});
+			if (isWorkspaceAdmin(role) && key?.referenceId === userId && key.enabled)
+				return true;
+			await tx.apikey.updateMany({
+				where: { id: created.id },
+				data: { enabled: false },
+			});
+			return false;
+		});
+		if (!allowed)
+			throw new ForbiddenException(
+				"El acceso cambia. La clave nueva queda desactivada.",
+			);
 
 		this.logger.log({
 			message: "API key created",
@@ -130,6 +155,7 @@ export class ApiKeysService {
 		headers: Headers,
 		input: RevokeApiKeyInput,
 	): Promise<{ id: string }> {
+		await this.assertManager(userId);
 		await this.call(() =>
 			auth.api.deleteApiKey({ headers, body: { keyId: input.id } }),
 		);
@@ -141,6 +167,13 @@ export class ApiKeysService {
 		});
 
 		return { id: input.id };
+	}
+
+	private async assertManager(userId: string) {
+		if (!isWorkspaceAdmin(await workspaceRoleOf(userId, this.db)))
+			throw new ForbiddenException(
+				"Sólo propietarios y administradores gestionan sus propias claves.",
+			);
 	}
 
 	private searchWhere(userId: string, q: string): Prisma.ApikeyWhereInput {

@@ -7,6 +7,7 @@ import {
 } from "@crm/db";
 import { OPEN_DEAL_STAGES } from "@crm/db/deal-stage";
 import type { FieldDefinitionWithOptions } from "@crm/db/fields";
+import { aiFeaturePolicy, isAiEnabled } from "@crm/env/features";
 import {
 	BadRequestException,
 	ConflictException,
@@ -16,12 +17,18 @@ import {
 } from "@nestjs/common";
 import { AgentQueueService } from "../agent/agent-queue.service";
 import { AgentTriggerService } from "../agent/agent-trigger.service";
+import { requireApiAiEnabled } from "../agent/ai-policy";
 import { ARCHIVE } from "../archive/archive-config";
 import {
 	ActivityStampService,
 	type StampTargets,
 } from "../crm/activity-stamp.service";
-import { type BulkResult, requireOwner, runBulk } from "../crm/bulk";
+import { type BulkResult, runBulk } from "../crm/bulk";
+import {
+	authorizedRecord,
+	recordMembership,
+	recordOwner,
+} from "../crm/record-access";
 import { blankToNull, toCents } from "../crm/values";
 import { ConversionService } from "../currency/conversion.service";
 import { InjectDatabase } from "../database/database.constants";
@@ -81,7 +88,11 @@ export class CompaniesService {
 		private readonly fields: FieldsService,
 	) {}
 
-	async list(input: CompanyListInput): Promise<ListResult<CompanyRow>> {
+	async list(
+		input: CompanyListInput,
+		userId: string,
+	): Promise<ListResult<CompanyRow>> {
+		await recordMembership(this.db, userId);
 		const filterableFields = await this.fields.filterableFieldsFor("COMPANY");
 		const where = this.buildWhere(input, filterableFields);
 		const { skip, take } = paginate(input);
@@ -124,7 +135,7 @@ export class CompaniesService {
 
 		const ids = rows.map((row) => row.id);
 		const [queued, tableFields] = await Promise.all([
-			this.queue.queuedCompanies(ids),
+			isAiEnabled() ? this.queue.queuedCompanies(ids) : new Set<string>(),
 			this.fields.tableValuesFor("COMPANY", ids),
 		]);
 
@@ -140,7 +151,8 @@ export class CompaniesService {
 				brandColor: row.brandColor,
 				industry: row.industry,
 				enrichmentStatus: row.enrichmentStatus,
-				queued: queued.has(row.id),
+				queued: isAiEnabled() && queued.has(row.id),
+				ai: aiFeaturePolicy(),
 				source: row.source,
 				owner: row.owner,
 				contactCount: row._count.contacts,
@@ -155,7 +167,8 @@ export class CompaniesService {
 		};
 	}
 
-	async byId(id: string) {
+	async byId(id: string, userId: string) {
+		await recordMembership(this.db, userId);
 		const company = await this.db.company.findUnique({
 			where: { id },
 			select: {
@@ -244,7 +257,8 @@ export class CompaniesService {
 		return {
 			...rest,
 			fields: await this.fields.valuesFor("COMPANY", id),
-			queued: await this.queue.isQueued({ companyId: id }),
+			queued: isAiEnabled() && (await this.queue.isQueued({ companyId: id })),
+			ai: aiFeaturePolicy(),
 			createdAt: createdAt.toISOString(),
 			archivedAt: archivedAt?.toISOString() ?? null,
 			enrichedAt: enrichedAt?.toISOString() ?? null,
@@ -262,16 +276,18 @@ export class CompaniesService {
 		};
 	}
 
-	async options(q: string) {
+	async options(q: string, userId: string) {
+		await recordMembership(this.db, userId);
 		return this.db.company.findMany({
-			where: this.searchFilter(q),
+			where: { AND: [this.searchFilter(q), { archivedAt: null }] },
 			select: { id: true, name: true, domain: true, iconUrl: true },
 			orderBy: { name: "asc" },
 			take: 100,
 		});
 	}
 
-	async create(input: CompanyCreateInput) {
+	async create(input: CompanyCreateInput, userId: string) {
+		await recordMembership(this.db, userId);
 		const domain = normalizeDomain(input.domain);
 
 		if (domain) {
@@ -287,12 +303,23 @@ export class CompaniesService {
 		}
 
 		const company = await this.agent.withCrmEvents(async (tx, emit) => {
+			const role = await recordMembership(tx, userId, { lock: true });
+			const ownerId = await recordOwner(
+				tx,
+				userId,
+				role,
+				input.ownerId === undefined ||
+					(role === "member" && input.ownerId === null)
+					? userId
+					: input.ownerId,
+			);
 			const created = await tx.company.create({
 				data: {
 					name: input.name.trim(),
 					domain,
 					website: domain ? `https://${domain}` : null,
-					ownerId: input.ownerId ?? null,
+					ownerId,
+					enrichmentStatus: isAiEnabled() ? "PENDING" : "SKIPPED",
 				},
 				select: { id: true, name: true, domain: true, createdAt: true },
 			});
@@ -311,15 +338,16 @@ export class CompaniesService {
 			domain: company.domain,
 		});
 
-		await this.agent.companyCreated(company.id);
-
-		void this.favicon.backfill(company.id, company.domain);
-		void this.fields.queueBackfillForNewRecord("COMPANY", company.id);
+		if (isAiEnabled()) {
+			await this.agent.companyCreated(company.id);
+			void this.favicon.backfill(company.id, company.domain);
+			void this.fields.queueBackfillForNewRecord("COMPANY", company.id);
+		}
 
 		return { id: company.id, name: company.name, domain: company.domain };
 	}
 
-	async update(id: string, input: CompanyUpdateInput) {
+	async update(id: string, input: CompanyUpdateInput, userId: string) {
 		const data: Prisma.CompanyUpdateInput = {};
 
 		if (input.name !== undefined) data.name = input.name.trim();
@@ -353,21 +381,32 @@ export class CompaniesService {
 				);
 			}
 			data.domain = domain;
-			const current = await this.db.company.findUnique({
-				where: { id },
-				select: { domain: true },
-			});
-			if (current && current.domain !== domain) {
-				data.enrichmentStatus = "PENDING";
-				data.enrichmentError = null;
-				data.iconUrl = null;
-				data.iconDarkUrl = null;
-				data.iconTone = null;
-			}
 		}
 
 		try {
 			const updated = await this.db.$transaction(async (tx) => {
+				const { role } = await authorizedRecord(
+					tx,
+					"company",
+					id,
+					userId,
+					"edit",
+				);
+				if (input.ownerId !== undefined)
+					await recordOwner(tx, userId, role, input.ownerId || null);
+				if (input.domain !== undefined) {
+					const current = await tx.company.findUniqueOrThrow({
+						where: { id },
+						select: { domain: true },
+					});
+					if (current.domain !== data.domain) {
+						data.enrichmentStatus = isAiEnabled() ? "PENDING" : "SKIPPED";
+						data.enrichmentError = null;
+						data.iconUrl = null;
+						data.iconDarkUrl = null;
+						data.iconTone = null;
+					}
+				}
 				if (input.fields) {
 					await this.fields.applyValues(tx, "COMPANY", id, input.fields);
 				}
@@ -379,7 +418,7 @@ export class CompaniesService {
 				});
 			});
 
-			if (data.enrichmentStatus === "PENDING") {
+			if (isAiEnabled() && data.enrichmentStatus === "PENDING") {
 				await this.agent.companyCreated(
 					id,
 					"Domain changed — anything we knew was about a different company",
@@ -393,12 +432,24 @@ export class CompaniesService {
 		}
 	}
 
-	async archive(id: string): Promise<{ id: string; name: string }> {
+	async archive(
+		id: string,
+		userId: string,
+	): Promise<{ id: string; name: string }> {
 		try {
-			const company = await this.db.company.update({
-				where: { id },
-				data: { archivedAt: new Date() },
-				select: { name: true },
+			const company = await this.db.$transaction(async (tx) => {
+				const { record } = await authorizedRecord(
+					tx,
+					"company",
+					id,
+					userId,
+					"archive",
+				);
+				return tx.company.update({
+					where: { id },
+					data: { archivedAt: record.archivedAt ?? new Date() },
+					select: { name: true },
+				});
 			});
 
 			this.logger.log({ message: "Company archived", companyId: id });
@@ -409,12 +460,18 @@ export class CompaniesService {
 		}
 	}
 
-	async restore(id: string): Promise<{ id: string; name: string }> {
+	async restore(
+		id: string,
+		userId: string,
+	): Promise<{ id: string; name: string }> {
 		try {
-			const company = await this.db.company.update({
-				where: { id },
-				data: { archivedAt: null },
-				select: { name: true },
+			const company = await this.db.$transaction(async (tx) => {
+				await authorizedRecord(tx, "company", id, userId, "restore");
+				return tx.company.update({
+					where: { id },
+					data: { archivedAt: null },
+					select: { name: true },
+				});
 			});
 
 			this.logger.log({ message: "Company restored", companyId: id });
@@ -425,19 +482,26 @@ export class CompaniesService {
 		}
 	}
 
-	async purge(id: string): Promise<{ id: string; name: string }>;
 	async purge(
 		id: string,
-		guard: { archivedBefore: Date },
-	): Promise<{ id: string; name: string } | null>;
-	async purge(
+		userId: string,
+	): Promise<{ id: string; name: string }> {
+		const result = await this.purgeRecord(id, { userId });
+		if (!result) throw new NotFoundException(`No company with id ${id}.`);
+		return result;
+	}
+
+	private async purgeRecord(
 		id: string,
-		guard?: { archivedBefore: Date },
+		access: { userId: string } | { archivedBefore: Date },
 	): Promise<{ id: string; name: string } | null> {
 		let deleted: { targets: StampTargets; name: string } | null;
 
 		try {
 			deleted = await this.db.$transaction(async (tx) => {
+				const guard = "archivedBefore" in access ? access : null;
+				if (!guard && "userId" in access)
+					await authorizedRecord(tx, "company", id, access.userId, "purge");
 				const [row] = await tx.$queryRaw<Array<{ archivedAt: Date | null }>>`
 					SELECT "archivedAt" FROM company WHERE id = ${id} FOR UPDATE
 				`;
@@ -452,16 +516,20 @@ export class CompaniesService {
 				) {
 					return null;
 				}
+				const deals = await tx.$queryRaw<
+					Array<{ id: string; archivedAt: Date | null }>
+				>`SELECT id, "archivedAt" FROM deal WHERE "companyId" = ${id} ORDER BY id FOR UPDATE`;
+				if (deals.some((deal) => !deal.archivedAt)) {
+					if (guard) return null;
+					throw new BadRequestException(
+						"Archiva las oportunidades de la empresa antes de eliminarla.",
+					);
+				}
 
 				const targets = await this.stamp.targetsOf(
 					{ OR: [{ companyId: id }, { deal: { companyId: id } }] },
 					tx,
 				);
-
-				const deals = await tx.deal.findMany({
-					where: { companyId: id },
-					select: { id: true },
-				});
 
 				await tx.agentTask.deleteMany({
 					where: {
@@ -505,122 +573,119 @@ export class CompaniesService {
 
 		return runBulk(
 			expired.map((row) => row.id),
-			(id) => this.purge(id, { archivedBefore: before }),
+			(id) => this.purgeRecord(id, { archivedBefore: before }),
 		);
 	}
 
-	async bulkAssignOwner(input: CompanyBulkOwnerInput): Promise<BulkResult> {
-		const ownerId = input.ownerId || null;
-
-		await requireOwner(this.db, ownerId);
-
-		const ids = [...new Set(input.ids)];
-		const { count } = await this.db.company.updateMany({
-			where: { id: { in: ids } },
-			data: { ownerId },
-		});
-
-		this.logger.log({
-			message: "Companies reassigned",
-			count,
-			ownerId,
-		});
-
-		return {
-			requested: ids.length,
-			succeeded: count,
-			skipped: 0,
-			failed: ids.length - count,
-			message: null,
-		};
-	}
-
-	async bulkEnrich(ids: string[]): Promise<BulkResult> {
-		return runBulk(ids, (id) => this.enrich(id));
-	}
-
-	async bulkArchive(ids: string[]): Promise<BulkResult> {
-		return runBulk(ids, (id) => this.archive(id));
-	}
-
-	async bulkRestore(ids: string[]): Promise<BulkResult> {
-		return runBulk(ids, (id) => this.restore(id));
-	}
-
-	async bulkPurge(ids: string[]): Promise<BulkResult> {
-		return runBulk(ids, (id) => this.purge(id));
-	}
-
-	async enrich(id: string): Promise<{ id: string; queued: boolean }> {
-		const company = await this.db.company.findUnique({
-			where: { id },
-			select: { id: true, updatedAt: true },
-		});
-
-		if (!company) {
-			throw new NotFoundException(`No company with id ${id}.`);
-		}
-
-		const queued = await this.agent.companyRequested(
-			id,
-			"A rep asked for a fresh look",
-		);
-
-		if (queued) {
-			await this.db.company.updateMany({
-				where: { id, updatedAt: company.updatedAt },
-				data: { enrichmentStatus: "PENDING", enrichmentError: null },
+	async bulkAssignOwner(
+		input: CompanyBulkOwnerInput,
+		userId: string,
+	): Promise<BulkResult> {
+		await recordMembership(this.db, userId, { administrative: true });
+		await this.db.$transaction(async (tx) => {
+			const role = await recordMembership(tx, userId, {
+				lock: true,
+				administrative: true,
 			});
-		}
+			await recordOwner(tx, userId, role, input.ownerId || null);
+		});
+		return runBulk(input.ids, (id) =>
+			this.update(id, { ownerId: input.ownerId }, userId),
+		);
+	}
 
-		return { id, queued };
+	async bulkEnrich(ids: string[], userId: string): Promise<BulkResult> {
+		requireApiAiEnabled();
+		await recordMembership(this.db, userId);
+		return runBulk(ids, (id) => this.enrich(id, userId));
+	}
+
+	async bulkArchive(ids: string[], userId: string): Promise<BulkResult> {
+		await recordMembership(this.db, userId);
+		return runBulk(ids, (id) => this.archive(id, userId));
+	}
+
+	async bulkRestore(ids: string[], userId: string): Promise<BulkResult> {
+		await recordMembership(this.db, userId);
+		return runBulk(ids, (id) => this.restore(id, userId));
+	}
+
+	async bulkPurge(ids: string[], userId: string): Promise<BulkResult> {
+		await recordMembership(this.db, userId, { ownerOnly: true });
+		return runBulk(ids, (id) => this.purge(id, userId));
+	}
+
+	async enrich(
+		id: string,
+		userId: string,
+	): Promise<{ id: string; queued: boolean }> {
+		requireApiAiEnabled();
+		const queued = await this.db.$transaction(async (tx) => {
+			await authorizedRecord(tx, "company", id, userId, "edit");
+			requireApiAiEnabled();
+			const queued = await this.agent.companyRequested(
+				id,
+				"A rep asked for a fresh look",
+				tx,
+			);
+			if (queued && isAiEnabled())
+				await tx.company.update({
+					where: { id },
+					data: { enrichmentStatus: "PENDING", enrichmentError: null },
+				});
+			return queued;
+		});
+		if (queued) this.agent.drainQueues();
+		return { id, queued: queued && isAiEnabled() };
 	}
 
 	async research(id: string, actingUserId: string) {
-		const company = await this.db.company.findUnique({
-			where: { id },
-			select: { id: true, domain: true },
-		});
-
-		if (!company) {
-			throw new NotFoundException(`No company with id ${id}.`);
-		}
-
-		if (!company.domain) {
-			throw new BadRequestException(
-				"There is nothing to read without a domain — add one first.",
+		requireApiAiEnabled();
+		const queued = await this.db.$transaction(async (tx) => {
+			await authorizedRecord(tx, "company", id, actingUserId, "edit");
+			requireApiAiEnabled();
+			const company = await tx.company.findUniqueOrThrow({
+				where: { id },
+				select: { domain: true },
+			});
+			if (!company.domain)
+				throw new BadRequestException(
+					"Añade un dominio antes de solicitar investigación.",
+				);
+			return this.agent.companyRequested(
+				id,
+				`Briefing requested by a rep (${actingUserId})`,
+				tx,
 			);
-		}
+		});
+		if (queued) this.agent.drainQueues();
 
-		const queued = await this.agent.companyRequested(
-			id,
-			`Briefing requested by a rep (${actingUserId})`,
-		);
-
-		return { ok: true as const, queued };
+		return { ok: true as const, queued: queued && isAiEnabled() };
 	}
 
-	async setPrimaryContact(companyId: string, contactId: string | null) {
-		if (contactId) {
-			const contact = await this.db.contact.findUnique({
-				where: { id: contactId },
-				select: { companyId: true },
-			});
-			if (!contact) {
-				throw new NotFoundException(`No contact with id ${contactId}.`);
-			}
-			if (contact.companyId !== companyId) {
-				throw new BadRequestException(
-					"That contact does not work at this company.",
-				);
-			}
-		}
-
+	async setPrimaryContact(
+		companyId: string,
+		contactId: string | null,
+		userId: string,
+	) {
 		try {
-			return await this.db.company.update({
-				where: { id: companyId },
-				data: { primaryContactId: contactId },
-				select: { id: true, primaryContactId: true },
+			return await this.db.$transaction(async (tx) => {
+				await authorizedRecord(tx, "company", companyId, userId, "edit");
+				if (contactId) {
+					const [contact] = await tx.$queryRaw<
+						Array<{ companyId: string | null; archivedAt: Date | null }>
+					>`SELECT "companyId", "archivedAt" FROM contact WHERE id = ${contactId} FOR SHARE`;
+					if (!contact) throw new NotFoundException("El contacto no existe.");
+					if (contact.companyId !== companyId || contact.archivedAt)
+						throw new BadRequestException(
+							"Selecciona un contacto activo de la misma empresa.",
+						);
+				}
+				return tx.company.update({
+					where: { id: companyId },
+					data: { primaryContactId: contactId },
+					select: { id: true, primaryContactId: true },
+				});
 			});
 		} catch (error) {
 			throw this.translate(error, companyId);

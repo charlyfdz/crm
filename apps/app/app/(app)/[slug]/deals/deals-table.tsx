@@ -19,10 +19,10 @@ import { useFieldFacets } from "@/components/crm/fields/field-facets";
 import { OwnerCell } from "@/components/crm/owner-cell";
 import { usePrefetchRecord } from "@/components/crm/record-sheet/record-prefetch";
 import { useOpenRecord } from "@/components/crm/record-sheet/record-stack";
-import { DealStageMenu } from "@/components/crm/stage-change";
 import { ListSearch } from "@/components/data-table/list-search";
 import { useTableQuery } from "@/components/data-table/use-table-query";
 import { LocalDay, LocalRelativeTime } from "@/components/local-date-time";
+import { DealStageControl } from "@/components/pipelines/deal-stage-control";
 import { DEAL_STAGE_OPTIONS } from "@/lib/deal-stage";
 import { useTRPC } from "@/lib/trpc/client";
 import type { RouterOutputs } from "@/lib/trpc/types";
@@ -52,7 +52,13 @@ const COLUMNS: DataTableColumn<DealRow>[] = [
 		header: "Stage",
 		sortable: true,
 		width: "w-[18%]",
-		cell: (row) => <DealStageMenu dealId={row.id} stage={row.stage} />,
+		cell: (row) => (
+			<DealStageControl
+				dealId={row.id}
+				current={row.pipelineStage}
+				archived={Boolean(row.archivedAt)}
+			/>
+		),
 	},
 	{
 		id: "amount",
@@ -155,6 +161,7 @@ export function DealsTable() {
 		placeholderData: (previous) => previous,
 	});
 	const users = useQuery(trpc.users.list.queryOptions());
+	const pipelines = useQuery(trpc.pipelines.list.queryOptions());
 
 	const rows = deals.data?.rows ?? [];
 	const selection = useTableSelection(
@@ -195,9 +202,19 @@ export function DealsTable() {
 		},
 		{
 			id: "stage",
-			label: "Stage",
+			label: "Clasificación",
 			options: DEAL_STAGE_OPTIONS.filter(
 				(option) => (facetCounts?.stage?.[option.value] ?? 0) > 0,
+			),
+		},
+		{
+			id: "pipelineStageIds",
+			label: "Etapa comercial",
+			options: (pipelines.data?.rows ?? []).flatMap((pipeline) =>
+				pipeline.stages.map((stage) => ({
+					value: stage.id,
+					label: `${pipeline.name} · ${stage.name}`,
+				})),
 			),
 		},
 		{
@@ -284,8 +301,8 @@ export function DealsTable() {
 						{unconverted && unconverted.count > 0 ? (
 							<span className="text-muted-foreground">
 								{" "}
-								· {unconverted.count} not counted (no{" "}
-								{unconverted.currencies.join(", ")} rate)
+								· {unconverted.count} sin conversión válida ({" "}
+								{unconverted.currencies.join(", ")})
 							</span>
 						) : null}
 					</span>

@@ -8,7 +8,9 @@ import {
 	type RecordSource,
 } from "@crm/db";
 import type { FieldDefinitionWithOptions } from "@crm/db/fields";
+import { aiFeaturePolicy, isAiEnabled } from "@crm/env/features";
 import {
+	BadRequestException,
 	ConflictException,
 	Injectable,
 	Logger,
@@ -16,13 +18,20 @@ import {
 } from "@nestjs/common";
 import { AgentQueueService } from "../agent/agent-queue.service";
 import { AgentTriggerService } from "../agent/agent-trigger.service";
+import { requireApiAiEnabled } from "../agent/ai-policy";
 import { ARCHIVE } from "../archive/archive-config";
 import { CompanyDirectoryService } from "../companies/company-directory.service";
 import {
 	ActivityStampService,
 	type StampTargets,
 } from "../crm/activity-stamp.service";
-import { type BulkResult, requireOwner, runBulk } from "../crm/bulk";
+import { type BulkResult, runBulk } from "../crm/bulk";
+import {
+	activeCompany,
+	authorizedRecord,
+	recordMembership,
+	recordOwner,
+} from "../crm/record-access";
 import { blankToNull, normalizeEmail, toCents } from "../crm/values";
 import { InjectDatabase } from "../database/database.constants";
 import { FieldsService } from "../fields/fields.service";
@@ -103,7 +112,11 @@ export class ContactsService {
 		private readonly fields: FieldsService,
 	) {}
 
-	async list(input: ContactListInput): Promise<ListResult<ContactRow>> {
+	async list(
+		input: ContactListInput,
+		userId: string,
+	): Promise<ListResult<ContactRow>> {
+		await recordMembership(this.db, userId);
 		const filterableFields = await this.fields.filterableFieldsFor("CONTACT");
 		const where = this.buildWhere(input, filterableFields);
 		const { skip, take } = paginate(input);
@@ -145,13 +158,15 @@ export class ContactsService {
 				createdAt: row.createdAt.toISOString(),
 				archivedAt: row.archivedAt?.toISOString() ?? null,
 				fields: tableFields.get(row.id) ?? {},
+				ai: aiFeaturePolicy(),
 			})),
 			total,
 			facetCounts,
 		};
 	}
 
-	async byId(id: string) {
+	async byId(id: string, userId: string) {
+		await recordMembership(this.db, userId);
 		const contact = await this.db.contact.findUnique({
 			where: { id },
 			select: {
@@ -233,7 +248,8 @@ export class ContactsService {
 			...rest,
 			company,
 			fields: await this.fields.valuesFor("CONTACT", id),
-			queued: await this.queue.isQueued({ contactId: id }),
+			queued: isAiEnabled() && (await this.queue.isQueued({ contactId: id })),
+			ai: aiFeaturePolicy(),
 			createdAt: createdAt.toISOString(),
 			archivedAt: archivedAt?.toISOString() ?? null,
 			brief: brief
@@ -260,7 +276,8 @@ export class ContactsService {
 		};
 	}
 
-	async create(input: ContactCreateInput) {
+	async create(input: ContactCreateInput, userId: string) {
+		await recordMembership(this.db, userId);
 		const email = normalizeEmail(input.email ?? "");
 
 		if (email) {
@@ -278,15 +295,22 @@ export class ContactsService {
 			}
 		}
 
-		const companyId =
-			input.companyId ??
-			(email
-				? await this.companies.companyForEmail(email, {
-						ownerId: input.ownerId,
-					})
-				: null);
-
 		const contact = await this.agent.withCrmEvents(async (tx, emit) => {
+			const role = await recordMembership(tx, userId, { lock: true });
+			const ownerId = await recordOwner(
+				tx,
+				userId,
+				role,
+				input.ownerId === undefined ||
+					(role === "member" && input.ownerId === null)
+					? userId
+					: input.ownerId,
+			);
+			const companyId =
+				input.companyId === undefined && email
+					? await this.companies.companyForContact(tx, emit, email, ownerId)
+					: (input.companyId ?? null);
+			if (companyId) await activeCompany(tx, companyId);
 			await this.allowAgain(tx, email);
 
 			const created = await tx.contact.create({
@@ -297,7 +321,8 @@ export class ContactsService {
 					phone: blankToNull(input.phone ?? ""),
 					title: blankToNull(input.title ?? ""),
 					companyId,
-					ownerId: input.ownerId ?? null,
+					ownerId,
+					enrichmentStatus: isAiEnabled() ? "PENDING" : "SKIPPED",
 				},
 				select: {
 					id: true,
@@ -324,21 +349,23 @@ export class ContactsService {
 
 		this.logger.log({ message: "Contact created", contactId: contact.id });
 
-		await this.agent.contactCreated(
-			contact.id,
-			"Added by a rep, with nothing on the record yet",
-		);
-		this.fields
-			.queueBackfillForNewRecord("CONTACT", contact.id)
-			.catch((error: Error) => {
-				this.logger.error(
-					{
-						message: "Contact backfill queueing failed",
-						contactId: contact.id,
-					},
-					error.stack,
-				);
-			});
+		if (isAiEnabled()) {
+			await this.agent.contactCreated(
+				contact.id,
+				"Added by a rep, with nothing on the record yet",
+			);
+			this.fields
+				.queueBackfillForNewRecord("CONTACT", contact.id)
+				.catch((error: Error) => {
+					this.logger.error(
+						{
+							message: "Contact backfill queueing failed",
+							contactId: contact.id,
+						},
+						error.stack,
+					);
+				});
+		}
 
 		return {
 			id: contact.id,
@@ -347,12 +374,28 @@ export class ContactsService {
 		};
 	}
 
-	async archive(id: string): Promise<{ id: string; name: string }> {
+	async archive(
+		id: string,
+		userId: string,
+	): Promise<{ id: string; name: string }> {
 		try {
-			const contact = await this.db.contact.update({
-				where: { id },
-				data: { archivedAt: new Date() },
-				select: { firstName: true, lastName: true },
+			const contact = await this.db.$transaction(async (tx) => {
+				const { record } = await authorizedRecord(
+					tx,
+					"contact",
+					id,
+					userId,
+					"archive",
+				);
+				if (await tx.company.count({ where: { primaryContactId: id } }))
+					throw new BadRequestException(
+						"Retira el contacto principal antes de archivar el contacto.",
+					);
+				return tx.contact.update({
+					where: { id },
+					data: { archivedAt: record.archivedAt ?? new Date() },
+					select: { firstName: true, lastName: true },
+				});
 			});
 
 			this.logger.log({ message: "Contact archived", contactId: id });
@@ -363,12 +406,25 @@ export class ContactsService {
 		}
 	}
 
-	async restore(id: string): Promise<{ id: string; name: string }> {
+	async restore(
+		id: string,
+		userId: string,
+	): Promise<{ id: string; name: string }> {
 		try {
-			const contact = await this.db.contact.update({
-				where: { id },
-				data: { archivedAt: null },
-				select: { firstName: true, lastName: true },
+			const contact = await this.db.$transaction(async (tx) => {
+				const { record } = await authorizedRecord(
+					tx,
+					"contact",
+					id,
+					userId,
+					"restore",
+				);
+				if (record.companyId) await activeCompany(tx, record.companyId);
+				return tx.contact.update({
+					where: { id },
+					data: { archivedAt: null },
+					select: { firstName: true, lastName: true },
+				});
 			});
 
 			this.logger.log({ message: "Contact restored", contactId: id });
@@ -379,14 +435,18 @@ export class ContactsService {
 		}
 	}
 
-	async purge(id: string): Promise<{ id: string; name: string }>;
 	async purge(
 		id: string,
-		guard: { archivedBefore: Date },
-	): Promise<{ id: string; name: string } | null>;
-	async purge(
+		userId: string,
+	): Promise<{ id: string; name: string }> {
+		const result = await this.purgeRecord(id, { userId });
+		if (!result) throw new NotFoundException(`No contact with id ${id}.`);
+		return result;
+	}
+
+	private async purgeRecord(
 		id: string,
-		guard?: { archivedBefore: Date },
+		access: { userId: string } | { archivedBefore: Date },
 	): Promise<{ id: string; name: string } | null> {
 		let deleted: {
 			targets: StampTargets;
@@ -396,6 +456,9 @@ export class ContactsService {
 
 		try {
 			deleted = await this.db.$transaction(async (tx) => {
+				const guard = "archivedBefore" in access ? access : null;
+				if (!guard && "userId" in access)
+					await authorizedRecord(tx, "contact", id, access.userId, "purge");
 				const [row] = await tx.$queryRaw<Array<{ archivedAt: Date | null }>>`
 					SELECT "archivedAt" FROM contact WHERE id = ${id} FOR UPDATE
 				`;
@@ -463,11 +526,11 @@ export class ContactsService {
 
 		return runBulk(
 			expired.map((row) => row.id),
-			(id) => this.purge(id, { archivedBefore: before }),
+			(id) => this.purgeRecord(id, { archivedBefore: before }),
 		);
 	}
 
-	async update(id: string, input: ContactUpdateInput) {
+	async update(id: string, input: ContactUpdateInput, userId: string) {
 		const data: Prisma.ContactUpdateInput = {};
 
 		if (input.firstName !== undefined) data.firstName = input.firstName.trim();
@@ -500,6 +563,28 @@ export class ContactsService {
 
 		try {
 			return await this.db.$transaction(async (tx) => {
+				const { record, role } = await authorizedRecord(
+					tx,
+					"contact",
+					id,
+					userId,
+					"edit",
+				);
+				if (input.ownerId !== undefined)
+					await recordOwner(tx, userId, role, input.ownerId || null);
+				if (input.companyId !== undefined) {
+					if (input.companyId) await activeCompany(tx, input.companyId);
+					if ((input.companyId || null) !== record.companyId) {
+						const [primary, deals] = await Promise.all([
+							tx.company.count({ where: { primaryContactId: id } }),
+							tx.dealContact.count({ where: { contactId: id } }),
+						]);
+						if (primary || deals)
+							throw new BadRequestException(
+								"Retira el contacto principal y los vínculos de oportunidades antes de cambiar la empresa.",
+							);
+					}
+				}
 				if (input.fields) {
 					await this.fields.applyValues(tx, "CONTACT", id, input.fields);
 				}
@@ -521,80 +606,52 @@ export class ContactsService {
 		}
 	}
 
-	async bulkAssignOwner(input: ContactBulkOwnerInput): Promise<BulkResult> {
-		const ownerId = input.ownerId || null;
-
-		await requireOwner(this.db, ownerId);
-
-		const ids = [...new Set(input.ids)];
-		const { count } = await this.db.contact.updateMany({
-			where: { id: { in: ids } },
-			data: { ownerId },
-		});
-
-		this.logger.log({
-			message: "Contacts reassigned",
-			count,
-			ownerId,
-		});
-
-		return {
-			requested: ids.length,
-			succeeded: count,
-			skipped: 0,
-			failed: ids.length - count,
-			message: null,
-		};
-	}
-
-	async bulkSetCompany(input: ContactBulkCompanyInput): Promise<BulkResult> {
-		const companyId = input.companyId || null;
-
-		if (companyId) {
-			const company = await this.db.company.findUnique({
-				where: { id: companyId },
-				select: { id: true },
+	async bulkAssignOwner(
+		input: ContactBulkOwnerInput,
+		userId: string,
+	): Promise<BulkResult> {
+		await recordMembership(this.db, userId, { administrative: true });
+		await this.db.$transaction(async (tx) => {
+			const role = await recordMembership(tx, userId, {
+				lock: true,
+				administrative: true,
 			});
-			if (!company) {
-				throw new NotFoundException(`No company with id ${companyId}.`);
-			}
-		}
-
-		const ids = [...new Set(input.ids)];
-		const { count } = await this.db.contact.updateMany({
-			where: { id: { in: ids } },
-			data: { companyId },
+			await recordOwner(tx, userId, role, input.ownerId || null);
 		});
-
-		this.logger.log({
-			message: "Contacts moved",
-			count,
-			companyId,
-		});
-
-		return {
-			requested: ids.length,
-			succeeded: count,
-			skipped: 0,
-			failed: ids.length - count,
-			message: null,
-		};
+		return runBulk(input.ids, (id) =>
+			this.update(id, { ownerId: input.ownerId }, userId),
+		);
 	}
 
-	async bulkEnrich(ids: string[]): Promise<BulkResult> {
-		return runBulk(ids, (id) => this.enrich(id));
+	async bulkSetCompany(
+		input: ContactBulkCompanyInput,
+		userId: string,
+	): Promise<BulkResult> {
+		await recordMembership(this.db, userId);
+		return runBulk(input.ids, (id) =>
+			this.update(id, { companyId: input.companyId }, userId),
+		);
 	}
 
-	async bulkArchive(ids: string[]): Promise<BulkResult> {
-		return runBulk(ids, (id) => this.archive(id));
+	async bulkEnrich(ids: string[], userId: string): Promise<BulkResult> {
+		requireApiAiEnabled();
+		await recordMembership(this.db, userId);
+		return runBulk(ids, (id) => this.enrich(id, userId));
 	}
 
-	async bulkRestore(ids: string[]): Promise<BulkResult> {
-		return runBulk(ids, (id) => this.restore(id));
+	async bulkArchive(ids: string[], userId: string): Promise<BulkResult> {
+		await recordMembership(this.db, userId);
+		return runBulk(ids, (id) => this.archive(id, userId));
 	}
 
-	async bulkPurge(ids: string[]): Promise<BulkResult> {
-		return runBulk(ids, (id) => this.purge(id));
+	async bulkRestore(ids: string[], userId: string): Promise<BulkResult> {
+		await recordMembership(this.db, userId);
+		return runBulk(ids, (id) => this.restore(id, userId));
+	}
+
+	async bulkPurge(ids: string[], userId: string): Promise<BulkResult> {
+		await recordMembership(this.db, userId, { ownerOnly: true });
+		return runBulk(ids, (id) => this.purge(id, userId));
 	}
 
 	private async allowAgain(
@@ -671,38 +728,42 @@ export class ContactsService {
 		};
 	}
 
-	async enrich(id: string): Promise<{ id: string; queued: boolean }> {
-		const contact = await this.db.contact.findUnique({
-			where: { id },
-			select: { id: true, imageUrl: true, linkedinUrl: true, updatedAt: true },
-		});
-
-		if (!contact) {
-			throw new NotFoundException(`No contact with id ${id}.`);
-		}
-
-		const queued = await this.agent.contactCreated(
-			id,
-			contact.linkedinUrl && !contact.imageUrl
-				? "A rep asked for a fresh look — they have a LinkedIn profile on file but no picture"
-				: "A rep asked for a fresh look",
-			true,
-		);
-
-		if (queued) {
-			await this.db.contact.updateMany({
-				where: { id, updatedAt: contact.updatedAt },
-				data: { enrichmentStatus: "PENDING", enrichmentError: null },
+	async enrich(
+		id: string,
+		userId: string,
+	): Promise<{ id: string; queued: boolean }> {
+		requireApiAiEnabled();
+		const queued = await this.db.$transaction(async (tx) => {
+			await authorizedRecord(tx, "contact", id, userId, "edit");
+			requireApiAiEnabled();
+			const contact = await tx.contact.findUniqueOrThrow({
+				where: { id },
+				select: { imageUrl: true, linkedinUrl: true },
 			});
-		}
-
-		return { id, queued };
+			const queued = await this.agent.contactCreated(
+				id,
+				contact.linkedinUrl && !contact.imageUrl
+					? "A rep asked for a fresh look — they have a LinkedIn profile on file but no picture"
+					: "A rep asked for a fresh look",
+				true,
+				tx,
+			);
+			if (queued && isAiEnabled())
+				await tx.contact.update({
+					where: { id },
+					data: { enrichmentStatus: "PENDING", enrichmentError: null },
+				});
+			return queued;
+		});
+		if (queued) this.agent.drainQueues();
+		return { id, queued: queued && isAiEnabled() };
 	}
 
 	async decideFact(
 		input: FactDecisionInput,
 		userId: string,
 	): Promise<{ contactId: string; field: string; applied: boolean }> {
+		await recordMembership(this.db, userId);
 		const fact = await this.db.contactFact.findUnique({
 			where: { id: input.factId },
 			select: {
@@ -726,6 +787,15 @@ export class ContactsService {
 		const column = FACT_COLUMNS[fact.field];
 
 		await this.db.$transaction(async (tx) => {
+			await authorizedRecord(tx, "contact", fact.contactId, userId, "edit");
+			const current = await tx.contactFact.findUnique({
+				where: { id: fact.id },
+				select: { status: true },
+			});
+			if (!current || current.status !== FactStatus.PROPOSED)
+				throw new ConflictException(
+					"That suggestion has already been settled.",
+				);
 			if (accepted) {
 				await tx.contactFact.updateMany({
 					where: {

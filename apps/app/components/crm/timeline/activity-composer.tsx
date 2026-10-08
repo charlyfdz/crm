@@ -1,19 +1,11 @@
 "use client";
 
-import Calendar from "@carbon/icons-react/es/Calendar";
-import { Calendar as DayPicker } from "@crm/ui/components/calendar";
-import { Icon } from "@crm/ui/components/icon";
 import {
 	InputGroup,
 	InputGroupAddon,
 	InputGroupButton,
 	InputGroupTextarea,
 } from "@crm/ui/components/input-group";
-import {
-	Popover,
-	PopoverContent,
-	PopoverTrigger,
-} from "@crm/ui/components/popover";
 import { Spinner } from "@crm/ui/components/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@crm/ui/components/toggle-group";
 import { useMutation } from "@tanstack/react-query";
@@ -22,17 +14,13 @@ import { toast } from "sonner";
 import { activityLabel } from "@/lib/activity-presentation";
 import { useCrmCache } from "@/lib/trpc/cache";
 import { useTRPC } from "@/lib/trpc/client";
+import { ActivityTaskCreateControl } from "../activity-tasks/activity-task-controls";
 import { ActivityIcon } from "./activity-icon";
 import type { TimelineAnchor } from "./timeline";
 
 const TYPES = ["NOTE", "CALL", "EMAIL", "MEETING", "TASK"] as const;
 
 type ComposableType = (typeof TYPES)[number];
-
-const dueFormat = new Intl.DateTimeFormat("en-US", {
-	month: "short",
-	day: "numeric",
-});
 
 const PLACEHOLDER = {
 	NOTE: "Log a note, call, email, meeting or task…",
@@ -48,14 +36,12 @@ export function ActivityComposer({ anchor }: { anchor: TimelineAnchor }) {
 
 	const [type, setType] = useState<ComposableType>("NOTE");
 	const [draft, setDraft] = useState("");
-	const [dueAt, setDueAt] = useState<Date | undefined>(undefined);
 
 	const isTask = type === "TASK";
 	const text = draft.trim();
 
 	const reset = () => {
 		setDraft("");
-		setDueAt(undefined);
 	};
 
 	const create = useMutation(
@@ -69,37 +55,32 @@ export function ActivityComposer({ anchor }: { anchor: TimelineAnchor }) {
 	);
 
 	const submit = () => {
-		if (text === "" || create.isPending) return;
+		if (isTask || text === "" || create.isPending) return;
 		create.mutate({
 			...anchor,
 			type,
-			subject: isTask ? text : undefined,
-			body: isTask ? undefined : text,
-			dueAt: isTask ? (dueAt?.toISOString() ?? null) : undefined,
+			body: text,
 		});
 	};
 
 	return (
-		<form
-			onSubmit={(event) => {
-				event.preventDefault();
-				submit();
-			}}
-		>
+		<div className="flex flex-col gap-4">
 			<InputGroup>
-				<InputGroupTextarea
-					value={draft}
-					onChange={(event) => setDraft(event.target.value)}
-					placeholder={PLACEHOLDER[type]}
-					aria-label="What happened"
-					onKeyDown={(event) => {
-						if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-							event.preventDefault();
-							submit();
-						}
-						if (event.key === "Escape") reset();
-					}}
-				/>
+				{!isTask ? (
+					<InputGroupTextarea
+						value={draft}
+						onChange={(event) => setDraft(event.target.value)}
+						placeholder={PLACEHOLDER[type]}
+						aria-label="What happened"
+						onKeyDown={(event) => {
+							if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+								event.preventDefault();
+								submit();
+							}
+							if (event.key === "Escape") reset();
+						}}
+					/>
+				) : null}
 
 				<InputGroupAddon align="block-end" className="gap-2 border-t">
 					<ToggleGroup
@@ -121,39 +102,22 @@ export function ActivityComposer({ anchor }: { anchor: TimelineAnchor }) {
 						))}
 					</ToggleGroup>
 
-					{isTask ? (
-						<Popover>
-							<PopoverTrigger asChild>
-								<InputGroupButton variant="ghost" size="xs">
-									<Icon icon={Calendar} data-icon="inline-start" />
-									{dueAt ? dueFormat.format(dueAt) : "Due date"}
-								</InputGroupButton>
-							</PopoverTrigger>
-							<PopoverContent size="fit" align="start">
-								<DayPicker
-									mode="single"
-									selected={dueAt}
-									onSelect={setDueAt}
-									autoFocus
-								/>
-							</PopoverContent>
-						</Popover>
-					) : null}
-
-					{text === "" ? null : (
+					{isTask || text === "" ? null : (
 						<InputGroupButton
-							type="submit"
+							type="button"
+							onClick={submit}
 							variant="default"
 							size="xs"
 							className="ml-auto"
 							disabled={create.isPending}
 						>
 							{create.isPending ? <Spinner /> : null}
-							{isTask ? "Add task" : `Log ${activityLabel(type).toLowerCase()}`}
+							{`Log ${activityLabel(type).toLowerCase()}`}
 						</InputGroupButton>
 					)}
 				</InputGroupAddon>
 			</InputGroup>
-		</form>
+			{isTask ? <ActivityTaskCreateControl anchor={anchor} /> : null}
+		</div>
 	);
 }

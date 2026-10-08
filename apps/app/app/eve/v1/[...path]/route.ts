@@ -1,4 +1,5 @@
 import { db } from "@crm/db";
+import { aiFeaturePolicy } from "@crm/env/features";
 import { connection } from "next/server";
 import {
 	AGENT_URL,
@@ -9,6 +10,13 @@ import { getSession } from "@/lib/session";
 
 async function handler(request: Request): Promise<Response> {
 	await connection();
+	const policy = aiFeaturePolicy();
+	if (!policy.enabled) {
+		return Response.json(
+			{ error: policy.reason, ...policy },
+			{ status: 503, headers: { "cache-control": "no-store" } },
+		);
+	}
 
 	if (!bridgeConfigured()) {
 		return Response.json(

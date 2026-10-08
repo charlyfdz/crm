@@ -15,6 +15,7 @@ import { Input } from "@crm/ui/components/input";
 import {
 	Select,
 	SelectContent,
+	SelectGroup,
 	SelectItem,
 	SelectTrigger,
 	SelectValue,
@@ -30,13 +31,14 @@ import {
 	SheetTrigger,
 } from "@crm/ui/components/sheet";
 import { Spinner } from "@crm/ui/components/spinner";
+import { parseDealAmount } from "@crm/validation/deal-money";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { parseAsBoolean, useQueryState } from "nuqs";
 import { type ComponentProps, Suspense, useId, useState } from "react";
 import { toast } from "sonner";
 import { CompanyPicker } from "@/components/crm/company-picker";
 import { useOpenRecord } from "@/components/crm/record-sheet/record-stack";
-import { dealStageLabel, OPEN_STAGES } from "@/lib/deal-stage";
+import { initialPipelineSelection } from "@/components/pipelines/pipeline-model";
 import { SEARCH_PARAM } from "@/lib/search-param-keys";
 import { useCrmCache } from "@/lib/trpc/cache";
 import { useTRPC } from "@/lib/trpc/client";
@@ -47,7 +49,7 @@ function AddButton(props: ComponentProps<typeof Button>) {
 	return (
 		<Button {...props}>
 			<Icon icon={Add} data-icon="inline-start" />
-			New deal
+			Nueva oportunidad
 		</Button>
 	);
 }
@@ -72,7 +74,8 @@ function CreateDealForm({ companyId }: { companyId?: string }) {
 	const [name, setName] = useState("");
 	const [company, setCompany] = useState(companyId ?? UNSET);
 	const [ownerId, setOwnerId] = useState(UNSET);
-	const [stage, setStage] = useState<string>("DEMO_BOOKED");
+	const [pipelineId, setPipelineId] = useState(UNSET);
+	const [stageId, setStageId] = useState(UNSET);
 	const [amount, setAmount] = useState("");
 	const [currency, setCurrency] = useState("");
 	const [closeDate, setCloseDate] = useState("");
@@ -84,10 +87,26 @@ function CreateDealForm({ companyId }: { companyId?: string }) {
 	const users = useQuery(trpc.users.list.queryOptions());
 	const me = useQuery(trpc.users.me.queryOptions());
 	const currencies = useQuery(trpc.currency.settings.queryOptions());
+	const workspace = useQuery(trpc.workspace.get.queryOptions());
+	const pipelines = useQuery(trpc.pipelines.list.queryOptions());
+	const initial = initialPipelineSelection(
+		pipelines.data?.rows ?? [],
+		pipelineId || undefined,
+	);
+	const selectedPipeline = pipelines.data?.rows.find(
+		(pipeline) => pipeline.id === initial?.pipelineId,
+	);
+	const resolvedStageId = stageId || initial?.pipelineStageId;
+	const selectedStage = selectedPipeline?.stages.find(
+		(stage) => stage.id === resolvedStageId && stage.outcome === "OPEN",
+	);
+	const role = workspace.data?.viewerRole;
+	const canAssign = role === "owner" || role === "admin";
+	const canCreate = canAssign || role === "member";
 
-	const resolvedOwner = ownerId || me.data?.id || UNSET;
+	const resolvedOwner = (canAssign ? ownerId : UNSET) || me.data?.id || UNSET;
 	const workspaceCurrency = currencies.data?.reportingCurrency;
-	const resolvedCurrency = currency || workspaceCurrency || "USD";
+	const resolvedCurrency = currency || workspaceCurrency || UNSET;
 
 	const create = useMutation(
 		trpc.deals.create.mutationOptions({
@@ -99,6 +118,8 @@ function CreateDealForm({ companyId }: { companyId?: string }) {
 				setAmount("");
 				setCurrency("");
 				setCloseDate("");
+				setPipelineId(UNSET);
+				setStageId(UNSET);
 				openRecord({ kind: "deal", id: deal.id });
 			},
 			onError: (error) => toast.error(error.message),
@@ -106,7 +127,12 @@ function CreateDealForm({ companyId }: { companyId?: string }) {
 	);
 
 	const ready =
-		name.trim() !== "" && company !== UNSET && resolvedOwner !== UNSET;
+		name.trim() !== "" &&
+		company !== UNSET &&
+		resolvedOwner !== UNSET &&
+		canCreate &&
+		Boolean(selectedStage && selectedPipeline && resolvedCurrency) &&
+		currencies.isSuccess;
 
 	return (
 		<Sheet open={open} onOpenChange={(next) => setOpen(next || null)}>
@@ -115,9 +141,10 @@ function CreateDealForm({ companyId }: { companyId?: string }) {
 			</SheetTrigger>
 			<SheetContent side="right">
 				<SheetHeader>
-					<SheetTitle>New deal</SheetTitle>
+					<SheetTitle>Nueva oportunidad</SheetTitle>
 					<SheetDescription>
-						Every deal belongs to a company and has someone's name against it.
+						La oportunidad necesita empresa, responsable y etapa comercial
+						activa.
 					</SheetDescription>
 				</SheetHeader>
 
@@ -126,16 +153,30 @@ function CreateDealForm({ companyId }: { companyId?: string }) {
 					className="flex-1 overflow-y-auto px-4"
 					onSubmit={(event) => {
 						event.preventDefault();
-						const parsed = Number.parseFloat(amount);
+						if (
+							!ready ||
+							create.isPending ||
+							!selectedStage ||
+							!selectedPipeline
+						)
+							return;
+						let amountCents: number | null;
+						try {
+							amountCents = parseDealAmount(amount);
+						} catch {
+							toast.error(
+								"Usa un importe válido con hasta dos decimales y sin separadores de miles.",
+							);
+							return;
+						}
 						create.mutate({
 							name,
 							companyId: company,
 							ownerId: resolvedOwner,
-							stage: stage as never,
-							amountCents: Number.isFinite(parsed)
-								? Math.round(parsed * 100)
-								: null,
-							currency: currency || workspaceCurrency,
+							pipelineId: selectedPipeline.id,
+							pipelineStageId: selectedStage.id,
+							amountCents,
+							currency: resolvedCurrency,
 							expectedCloseDate: closeDate || null,
 						});
 					}}
@@ -147,7 +188,7 @@ function CreateDealForm({ companyId }: { companyId?: string }) {
 								id={nameId}
 								value={name}
 								onChange={(event) => setName(event.target.value)}
-								placeholder="Stripe — Comp AI"
+								placeholder="Empresa — Servicio o proyecto"
 								autoComplete="off"
 								required
 							/>
@@ -164,37 +205,80 @@ function CreateDealForm({ companyId }: { companyId?: string }) {
 
 						<Field>
 							<FieldLabel htmlFor="create-deal-owner">Owner</FieldLabel>
-							<Select value={resolvedOwner} onValueChange={setOwnerId}>
+							<Select
+								value={resolvedOwner}
+								onValueChange={setOwnerId}
+								disabled={!canAssign || create.isPending}
+							>
 								<SelectTrigger id="create-deal-owner">
 									<SelectValue placeholder="Choose an owner" />
 								</SelectTrigger>
 								<SelectContent>
-									{(users.data ?? []).map((user) => (
-										<SelectItem key={user.id} value={user.id}>
-											{user.name}
-										</SelectItem>
-									))}
+									<SelectGroup>
+										{(users.data ?? []).map((user) => (
+											<SelectItem key={user.id} value={user.id}>
+												{user.name}
+											</SelectItem>
+										))}
+									</SelectGroup>
 								</SelectContent>
 							</Select>
 						</Field>
 
 						<Field>
-							<FieldLabel htmlFor="create-deal-stage">Stage</FieldLabel>
-							<Select value={stage} onValueChange={setStage}>
+							<FieldLabel htmlFor="create-deal-pipeline">
+								Proceso comercial
+							</FieldLabel>
+							<Select
+								value={initial?.pipelineId ?? UNSET}
+								disabled={!pipelines.isSuccess || create.isPending}
+								onValueChange={(next) => {
+									setPipelineId(next);
+									setStageId(UNSET);
+								}}
+							>
+								<SelectTrigger id="create-deal-pipeline">
+									<SelectValue placeholder="Selecciona un proceso" />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectGroup>
+										{(pipelines.data?.rows ?? []).map((pipeline) => (
+											<SelectItem key={pipeline.id} value={pipeline.id}>
+												{pipeline.name}
+												{pipeline.isDefault ? " · Predeterminado" : ""}
+											</SelectItem>
+										))}
+									</SelectGroup>
+								</SelectContent>
+							</Select>
+						</Field>
+						<Field>
+							<FieldLabel htmlFor="create-deal-stage">
+								Etapa comercial
+							</FieldLabel>
+							<Select
+								value={resolvedStageId ?? UNSET}
+								onValueChange={setStageId}
+								disabled={!selectedPipeline || create.isPending}
+							>
 								<SelectTrigger id="create-deal-stage">
 									<SelectValue />
 								</SelectTrigger>
 								<SelectContent>
-									{OPEN_STAGES.map((value) => (
-										<SelectItem key={value} value={value}>
-											{dealStageLabel(value)}
-										</SelectItem>
-									))}
+									<SelectGroup>
+										{(selectedPipeline?.stages ?? [])
+											.filter((stage) => stage.outcome === "OPEN")
+											.map((stage) => (
+												<SelectItem key={stage.id} value={stage.id}>
+													{stage.name}
+												</SelectItem>
+											))}
+									</SelectGroup>
 								</SelectContent>
 							</Select>
 							<FieldDescription>
-								A new deal is an open deal — close it from the pipeline once
-								there is an outcome to record.
+								La oportunidad inicia abierta. Registra el cierre desde su ficha
+								después de crearla.
 							</FieldDescription>
 						</Field>
 
@@ -209,7 +293,11 @@ function CreateDealForm({ companyId }: { companyId?: string }) {
 									inputMode="decimal"
 									autoComplete="off"
 								/>
-								<Select value={resolvedCurrency} onValueChange={setCurrency}>
+								<Select
+									value={resolvedCurrency}
+									onValueChange={setCurrency}
+									disabled={!currencies.isSuccess || create.isPending}
+								>
 									<SelectTrigger
 										aria-label="Currency"
 										className="w-28 shrink-0"
@@ -217,11 +305,13 @@ function CreateDealForm({ companyId }: { companyId?: string }) {
 										<SelectValue />
 									</SelectTrigger>
 									<SelectContent>
-										{CURRENCIES.map((entry) => (
-											<SelectItem key={entry.code} value={entry.code}>
-												{entry.code}
-											</SelectItem>
-										))}
+										<SelectGroup>
+											{CURRENCIES.map((entry) => (
+												<SelectItem key={entry.code} value={entry.code}>
+													{entry.code}
+												</SelectItem>
+											))}
+										</SelectGroup>
 									</SelectContent>
 								</Select>
 							</div>
@@ -246,7 +336,7 @@ function CreateDealForm({ companyId }: { companyId?: string }) {
 						disabled={create.isPending || !ready}
 					>
 						{create.isPending ? <Spinner /> : null}
-						Add deal
+						Crear oportunidad
 					</Button>
 					<SheetClose asChild>
 						<Button variant="outline">Cancel</Button>

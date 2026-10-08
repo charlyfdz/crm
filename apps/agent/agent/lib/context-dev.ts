@@ -1,3 +1,4 @@
+import { AI_DISABLED_REASON, isAiEnabled } from "@crm/env/features";
 import ContextDev from "context.dev";
 import { APIError } from "context.dev/core/error";
 import { z } from "zod";
@@ -68,6 +69,10 @@ export type SearchResult = {
 let client: { key: string; api: ContextDev } | null = null;
 
 export async function contextDev(): Promise<ContextDev | null> {
+	if (!isAiEnabled()) {
+		client = null;
+		return null;
+	}
 	const key = await contextDevKey();
 
 	if (!key) {
@@ -99,6 +104,7 @@ export type KeyCheck =
 const PROBE_EMAIL = "key-check@gmail.com";
 
 export async function verifyKey(key: string): Promise<KeyCheck> {
+	if (!isAiEnabled()) return { outcome: "unknown", reason: AI_DISABLED_REASON };
 	const api = new ContextDev({ apiKey: key });
 
 	try {

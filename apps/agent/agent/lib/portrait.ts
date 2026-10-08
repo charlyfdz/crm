@@ -1,4 +1,5 @@
 import { db } from "@crm/db";
+import { AI_DISABLED_REASON, isAiEnabled } from "@crm/env/features";
 import { blobEnabled, isMirrored, mirror } from "@crm/db/blob";
 import { CONTEXT_DEV_PEOPLE, enabled } from "./capabilities";
 import { findPortrait, type PortraitSource } from "./portrait-sources";
@@ -21,6 +22,9 @@ export async function storePortrait({
 	verified: boolean;
 	force?: boolean;
 }): Promise<PortraitResult> {
+	if (!isAiEnabled()) {
+		return { stored: false, imageUrl: null, reason: AI_DISABLED_REASON };
+	}
 	if (!sourceUrl) {
 		return {
 			stored: false,
@@ -96,6 +100,9 @@ export async function runPortrait({
 	spend: (units?: number) => { ok: boolean; reason?: string };
 	force?: boolean;
 }): Promise<PortraitResult> {
+	if (!isAiEnabled()) {
+		return { stored: false, imageUrl: null, reason: AI_DISABLED_REASON };
+	}
 	if (!blobEnabled()) {
 		return {
 			stored: false,

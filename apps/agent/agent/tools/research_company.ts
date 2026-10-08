@@ -1,4 +1,5 @@
 import { ActivityType, db } from "@crm/db";
+import { aiFeaturePolicy } from "@crm/env/features";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { extract, type JsonSchema } from "../lib/context-dev";
@@ -75,6 +76,8 @@ export default defineTool({
 		companyId: z.string(),
 	}),
 	async execute({ companyId }) {
+		const policy = aiFeaturePolicy();
+		if (!policy.enabled) return { written: false as const, ...policy };
 		const company = await db.company.findUnique({
 			where: { id: companyId },
 			select: {

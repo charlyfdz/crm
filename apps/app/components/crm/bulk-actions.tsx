@@ -39,15 +39,13 @@ export function reportBulk(
 	done: (count: number) => string,
 ): void {
 	if (result.succeeded === 0) {
-		toast.error(result.message ?? "Nothing changed.");
+		toast.error(result.message ?? "No se modificó ningún registro.");
 		return;
 	}
 
 	if (result.failed > 0) {
 		toast.error(
-			`${done(result.succeeded)} ${result.failed} ${
-				result.failed === 1 ? "was" : "were"
-			} left alone${result.message ? ` — ${result.message}` : "."}`,
+			`${done(result.succeeded)} ${result.failed} sin cambios${result.message ? ` — ${result.message}` : "."}`,
 		);
 		return;
 	}
@@ -71,7 +69,7 @@ export function BulkActionsMenu({
 			<DropdownMenuTrigger asChild>
 				<Button variant="outline" size="sm" disabled={pending}>
 					{pending ? <Spinner /> : null}
-					Actions
+					Acciones
 					<ChevronDown data-icon="inline-end" className="opacity-60" />
 				</Button>
 			</DropdownMenuTrigger>
@@ -93,7 +91,7 @@ export function BulkOwnerMenu({
 }) {
 	return (
 		<DropdownMenuSub>
-			<DropdownMenuSubTrigger>Assign owner</DropdownMenuSubTrigger>
+			<DropdownMenuSubTrigger>Asignar responsable</DropdownMenuSubTrigger>
 			<DropdownMenuSubContent className="max-h-72 overflow-y-auto">
 				<DropdownMenuGroup>
 					{unassignedLabel && (
@@ -125,12 +123,16 @@ export function BulkDeleteDialog({
 	title,
 	description,
 	onConfirm,
+	pending = false,
+	disabled = false,
 }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	title: string;
 	description: string;
 	onConfirm: () => void;
+	pending?: boolean;
+	disabled?: boolean;
 }) {
 	return (
 		<AlertDialog open={open} onOpenChange={onOpenChange}>
@@ -141,9 +143,16 @@ export function BulkDeleteDialog({
 				</AlertDialogHeader>
 
 				<AlertDialogFooter>
-					<AlertDialogCancel>Cancel</AlertDialogCancel>
-					<AlertDialogAction variant="destructive" onClick={onConfirm}>
-						Delete
+					<AlertDialogCancel>Cancelar</AlertDialogCancel>
+					<AlertDialogAction
+						variant="destructive"
+						disabled={pending || disabled}
+						onClick={() => {
+							if (!pending && !disabled) onConfirm();
+						}}
+					>
+						{pending ? <Spinner data-icon="inline-start" /> : null}
+						Eliminar definitivamente
 					</AlertDialogAction>
 				</AlertDialogFooter>
 			</AlertDialogContent>

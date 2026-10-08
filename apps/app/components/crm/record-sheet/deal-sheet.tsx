@@ -21,6 +21,7 @@ import {
 	TooltipTrigger,
 } from "@crm/ui/components/tooltip";
 import { formatMoney } from "@crm/ui/lib/format";
+import { parseDealAmount } from "@crm/validation/deal-money";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { AgentPanel } from "@/components/crm/agent-panel";
@@ -36,9 +37,19 @@ import {
 	savingValue,
 } from "@/components/crm/inline-field";
 import { OwnerCell } from "@/components/crm/owner-cell";
-import { DealStageMenu } from "@/components/crm/stage-change";
-import { StageStepper } from "@/components/crm/stage-stepper";
+import {
+	recordControls,
+	recordOwnerOptions,
+} from "@/components/crm/record-control-policy";
+import {
+	RecordEditScope,
+	RecordReadOnlyNotice,
+} from "@/components/crm/record-edit-scope";
 import { Timeline } from "@/components/crm/timeline/timeline";
+import {
+	useRecordOwners,
+	useRecordViewer,
+} from "@/components/crm/use-record-viewer";
 import {
 	DetailSheetBody,
 	DetailSheetEmpty,
@@ -54,6 +65,8 @@ import {
 	LocalDay,
 	LocalRelativeTime,
 } from "@/components/local-date-time";
+import { DealStageControl } from "@/components/pipelines/deal-stage-control";
+import { DealStageHistory } from "@/components/pipelines/deal-stage-history";
 import { savingField } from "@/lib/pending-field";
 import { useCrmCache } from "@/lib/trpc/cache";
 import { useTRPC } from "@/lib/trpc/client";
@@ -197,16 +210,17 @@ export function DealSheet({ dealId }: { dealId: string }) {
 			actions={
 				deal ? (
 					<>
-						<DealStageMenu
+						<DealStageControl
 							dealId={deal.id}
-							stage={deal.stage}
-							variant="control"
+							current={deal.pipelineStage}
+							archived={Boolean(deal.archivedAt)}
 						/>
 						<RecordActions
 							record={{ kind: "deal", id: deal.id }}
 							name={deal.name}
 							consequence={`Its stage history, notes and agent conversations go too. ${deal.company.name} and the ${deal.contacts.length === 1 ? "person" : "people"} on it stay in the CRM.`}
 							archivedAt={deal.archivedAt}
+							owner={deal.owner}
 						/>
 					</>
 				) : null
@@ -250,7 +264,9 @@ function DealOverview({ deal }: { deal: Deal }) {
 	const trpc = useTRPC();
 	const cache = useCrmCache();
 
-	const users = useQuery(trpc.users.list.queryOptions());
+	const viewer = useRecordViewer();
+	const access = recordControls(viewer.viewer, deal);
+	const users = useRecordOwners(access.canAssign);
 
 	const update = useMutation(
 		trpc.deals.update.mutationOptions({
@@ -272,102 +288,116 @@ function DealOverview({ deal }: { deal: Deal }) {
 	const isSaving = savingField(update);
 
 	return (
-		<DetailSheetBody>
-			<DetailSheetSection title="Stage">
-				<StageStepper dealId={deal.id} stage={deal.stage} />
-
-				{deal.closedReason ? (
-					<DetailSheetProperties>
-						<DetailSheetProperty label="Closed">
-							{deal.closedAt ? (
-								<LocalDateTime date={deal.closedAt} options={DATE_OPTIONS} />
-							) : (
-								<EmptyCellValue />
-							)}
-						</DetailSheetProperty>
-						<DetailSheetProperty label="Reason" wide>
-							{deal.closedReason}
-						</DetailSheetProperty>
-					</DetailSheetProperties>
+		<RecordEditScope readOnly={!access.canEdit}>
+			<DetailSheetBody>
+				{!access.canEdit ? (
+					<RecordReadOnlyNotice
+						archived={Boolean(deal.archivedAt)}
+						loading={viewer.loading}
+						error={viewer.error}
+					/>
 				) : null}
-			</DetailSheetSection>
-
-			<DetailSheetSection title="Details" action={<FieldsCog kind="deal" />}>
-				<DetailSheetProperties>
-					<InlineField
-						label="Name"
-						value={deal.name}
-						saving={isSaving("name")}
-						onSave={(name) => name && save({ name })}
+				<DetailSheetSection title="Stage">
+					<DealStageControl
+						dealId={deal.id}
+						current={deal.pipelineStage}
+						archived={Boolean(deal.archivedAt)}
 					/>
-					<InlineField
-						label="Amount"
-						value={
-							deal.amountCents === null ? null : String(deal.amountCents / 100)
-						}
-						placeholder="24000"
-						saving={isSaving("amountCents")}
-						onSave={(next) => {
-							if (next === "") return save({ amountCents: null });
-							const parsed = Number.parseFloat(next);
-							if (!Number.isFinite(parsed) || parsed < 0) {
-								toast.error("Amount has to be a number.");
-								return;
+					<DealStageHistory dealId={deal.id} />
+
+					{deal.closedReason ? (
+						<DetailSheetProperties>
+							<DetailSheetProperty label="Closed">
+								{deal.closedAt ? (
+									<LocalDateTime date={deal.closedAt} options={DATE_OPTIONS} />
+								) : (
+									<EmptyCellValue />
+								)}
+							</DetailSheetProperty>
+							<DetailSheetProperty label="Reason" wide>
+								{deal.closedReason}
+							</DetailSheetProperty>
+						</DetailSheetProperties>
+					) : null}
+				</DetailSheetSection>
+
+				<DetailSheetSection title="Details" action={<FieldsCog kind="deal" />}>
+					<DetailSheetProperties>
+						<InlineField
+							label="Name"
+							value={deal.name}
+							saving={isSaving("name")}
+							onSave={(name) => name && save({ name })}
+						/>
+						<InlineField
+							label="Amount"
+							value={
+								deal.amountCents === null
+									? null
+									: String(deal.amountCents / 100)
 							}
-							save({ amountCents: Math.round(parsed * 100) });
-						}}
-						render={(value) =>
-							formatMoney(Math.round(Number(value) * 100), currency)
-						}
-					/>
-					<InlineSelectField
-						label="Currency"
-						value={currency}
-						options={currencyOptions(currency)}
-						onSave={(currency) => save({ currency })}
-					/>
-					<ReportedValue deal={deal} />
-					<InlineDateField
-						label="Close date"
-						value={deal.expectedCloseDate}
-						saving={isSaving("expectedCloseDate")}
-						onSave={(next) => save({ expectedCloseDate: next || null })}
-					/>
-					<InlineCompanyField
-						value={deal.company.id}
-						company={deal.company}
-						saving={isSaving("companyId")}
-						onSave={(companyId) => save({ companyId })}
-					/>
-					<InlineSelectField
-						label="Owner"
-						value={deal.owner.id}
-						options={(users.data ?? []).map((user) => ({
-							value: user.id,
-							label: user.name,
-						}))}
-						onSave={(ownerId) => save({ ownerId })}
-					/>
-					<RecordFields
-						fields={deal.fields}
-						saving={isSavingField}
-						onSave={saveFields}
-					/>
-				</DetailSheetProperties>
-			</DetailSheetSection>
+							placeholder="24000"
+							saving={isSaving("amountCents")}
+							onSave={(next) => {
+								try {
+									save({ amountCents: parseDealAmount(next) });
+								} catch {
+									toast.error(
+										"Usa un importe válido con hasta dos decimales y sin separadores de miles.",
+									);
+								}
+							}}
+							render={(value) =>
+								formatMoney(Math.round(Number(value) * 100), currency)
+							}
+						/>
+						<InlineSelectField
+							label="Currency"
+							value={currency}
+							options={currencyOptions(currency)}
+							onSave={(currency) => save({ currency })}
+						/>
+						<ReportedValue deal={deal} />
+						<InlineDateField
+							label="Close date"
+							value={deal.expectedCloseDate}
+							saving={isSaving("expectedCloseDate")}
+							onSave={(next) => save({ expectedCloseDate: next || null })}
+						/>
+						<InlineCompanyField
+							value={deal.company.id}
+							company={deal.company}
+							saving={isSaving("companyId")}
+							onSave={(companyId) => save({ companyId })}
+						/>
+						<InlineSelectField
+							label="Owner"
+							value={deal.owner.id}
+							options={recordOwnerOptions(users.users, deal.owner)}
+							readOnly={!access.canAssign || !users.ready}
+							onSave={(ownerId) => save({ ownerId })}
+						/>
+						<RecordFields
+							fields={deal.fields}
+							saving={isSavingField}
+							onSave={saveFields}
+						/>
+					</DetailSheetProperties>
+				</DetailSheetSection>
 
-			<DetailSheetSection title="Description">
-				<InlineTextArea
-					label="Description"
-					value={deal.description}
-					placeholder={`What ${deal.company.name} is buying, why now, and what stands in the way.`}
-					saving={isSaving("description")}
-					onSave={(description) => save({ description })}
-				/>
-			</DetailSheetSection>
+				<DetailSheetSection title="Description">
+					<InlineTextArea
+						label="Description"
+						value={deal.description}
+						placeholder={`What ${deal.company.name} is buying, why now, and what stands in the way.`}
+						saving={isSaving("description")}
+						onSave={(description) => save({ description })}
+					/>
+				</DetailSheetSection>
 
-			<WhereItStands deal={deal} />
-		</DetailSheetBody>
+				<WhereItStands deal={deal} />
+			</DetailSheetBody>
+		</RecordEditScope>
 	);
 }
 
@@ -444,6 +474,8 @@ function DealContacts({
 	const trpc = useTRPC();
 	const cache = useCrmCache();
 	const openRecord = useOpenRecord();
+	const { viewer } = useRecordViewer();
+	const access = recordControls(viewer, deal);
 
 	const detach = useMutation(
 		trpc.deals.detachContact.mutationOptions({
@@ -459,13 +491,14 @@ function DealContacts({
 		}),
 	);
 
-	const form = adding ? (
-		<AttachDealContact
-			dealId={deal.id}
-			companyName={deal.company.name}
-			onDone={onDone}
-		/>
-	) : null;
+	const form =
+		adding && access.canEdit ? (
+			<AttachDealContact
+				dealId={deal.id}
+				companyName={deal.company.name}
+				onDone={onDone}
+			/>
+		) : null;
 
 	if (deal.contacts.length === 0) {
 		return (
@@ -477,7 +510,12 @@ function DealContacts({
 						title="No contacts on this deal"
 						description={`Nobody from ${deal.company.name} is attached yet. Bring the people you are selling to onto the deal and it says who to chase.`}
 						action={
-							<Button variant="outline" size="sm" onClick={onAdd}>
+							<Button
+								variant="outline"
+								size="sm"
+								onClick={onAdd}
+								disabled={!access.canEdit}
+							>
 								<Icon icon={Add} data-icon="inline-start" />
 								Add contact
 							</Button>
@@ -489,7 +527,7 @@ function DealContacts({
 	}
 
 	return (
-		<>
+		<RecordEditScope readOnly={!access.canEdit}>
 			{form}
 			<SimpleTable variant="panel" columns={CONTACT_COLUMNS}>
 				{deal.contacts.map((contact) => (
@@ -539,9 +577,10 @@ function DealContacts({
 									<Button
 										variant="ghost"
 										size="icon-xs"
-										disabled={detach.isPending}
+										disabled={detach.isPending || !access.canEdit}
 										onClick={(event) => {
 											event.stopPropagation();
+											if (!access.canEdit) return;
 											detach.mutate({
 												dealId: deal.id,
 												contactId: contact.id,
@@ -561,11 +600,12 @@ function DealContacts({
 				))}
 
 				<AddRow
+					disabled={!access.canEdit}
 					label="Add contact"
 					columns={CONTACT_COLUMNS.length}
 					onClick={onAdd}
 				/>
 			</SimpleTable>
-		</>
+		</RecordEditScope>
 	);
 }

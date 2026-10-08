@@ -47,6 +47,7 @@ import {
 	AgentClarificationComposer,
 	type ClarificationResponse,
 } from "@/components/agent-clarification-composer";
+import { AiDisabledNotice } from "@/components/ai-disabled-notice";
 import { LocalDateTime } from "@/components/local-date-time";
 import {
 	consumeBuilderCommand,
@@ -226,7 +227,7 @@ export function AgentBuilderChat({
 		}),
 		enabled: !sharedChat && Boolean(conversation.data?.sessionId),
 		refetchInterval: (query) =>
-			conversation.data &&
+			conversation.data?.ai.enabled &&
 			(builderConversationNeedsPolling(conversation.data) ||
 				!eventStreamSettled(query.state.data ?? []))
 				? 2500
@@ -294,6 +295,7 @@ export function AgentBuilderChat({
 	}
 
 	const data = conversation.data ?? (initialData as Conversation);
+	const aiEnabled = data.ai.enabled;
 	const submissions = builderSubmissions.parse(data.submissions);
 	const confirmedRequestIds = new Set(
 		submissions
@@ -304,10 +306,9 @@ export function AgentBuilderChat({
 		(item) => !confirmedRequestIds.has(item.clientRequestId),
 	);
 	const persistedEvents = streamEvents.parse(events.data ?? []);
-	const streamKey = builderSessionStreamKey(
-		data.sessionId,
-		submissions.at(-1)?.id ?? null,
-	);
+	const streamKey = aiEnabled
+		? builderSessionStreamKey(data.sessionId, submissions.at(-1)?.id ?? null)
+		: null;
 	const transcriptEvents =
 		streamKey && liveStream?.key === streamKey
 			? liveStream.events
@@ -321,6 +322,7 @@ export function AgentBuilderChat({
 	const answeredQuestionIds = questionResponseIds(submissions);
 	const waitingQuestion = data.pendingQuestion;
 	const question =
+		aiEnabled &&
 		waitingQuestion &&
 		!hasQueuedQuestionResponse(submissions, waitingQuestion.requestId)
 			? waitingQuestion
@@ -338,6 +340,10 @@ export function AgentBuilderChat({
 		prompt: BuilderPrompt,
 		clientRequestId = crypto.randomUUID(),
 	) => {
+		if (!aiEnabled) {
+			toast.error("La IA está desactivada en esta instalación.");
+			return;
+		}
 		setSending((current) => [
 			...current,
 			{
@@ -462,8 +468,9 @@ export function AgentBuilderChat({
 								</MessageScrollerItem>
 							))}
 
-							{pendingSubmissions.length > 0 ||
-							(working && !builderCallActive) ? (
+							{aiEnabled &&
+							(pendingSubmissions.length > 0 ||
+								(working && !builderCallActive)) ? (
 								<MessageScrollerItem messageId={`thinking:${conversationId}`}>
 									<ThinkingIndicator />
 								</MessageScrollerItem>
@@ -502,7 +509,9 @@ export function AgentBuilderChat({
 										failure={failure}
 										creatingAgent={currentSubmissionCreatesAgent}
 										retrying={submit.isPending}
-										onRetry={retryPrompt ? () => send(retryPrompt) : null}
+										onRetry={
+											aiEnabled && retryPrompt ? () => send(retryPrompt) : null
+										}
 									/>
 								</MessageScrollerItem>
 							) : null}
@@ -518,7 +527,8 @@ export function AgentBuilderChat({
 								</MessageScrollerItem>
 							) : null}
 
-							{creatingAgent &&
+							{aiEnabled &&
+							creatingAgent &&
 							data.agent?.status === "LIVE" &&
 							!reviewVersion ? (
 								<MessageScrollerItem
@@ -545,7 +555,9 @@ export function AgentBuilderChat({
 
 			<div className="min-h-0 shrink overflow-y-auto overscroll-contain border-t px-4 py-3 sm:px-5">
 				<div className="mx-auto w-full max-w-3xl">
-					{question ? (
+					{!aiEnabled ? (
+						<AiDisabledNotice />
+					) : question ? (
 						<AgentClarificationComposer
 							key={question.requestId}
 							question={question}
@@ -671,7 +683,8 @@ function SharedAgentChat({
 	const messages = messagesFromEvents(events);
 	const timeline = conversationTimeline(submissions, events, messages);
 	const answeredQuestionIds = questionResponseIds(submissions);
-	const working = events.length > 0 && !eventStreamSettled(events);
+	const working =
+		conversation.ai.enabled && events.length > 0 && !eventStreamSettled(events);
 	const artifactVersion = working
 		? null
 		: latestCompletedArtifactVersionId(conversation.builderArtifacts);
@@ -693,6 +706,7 @@ function SharedAgentChat({
 							className="mx-auto w-full max-w-3xl gap-4 px-4 py-6 sm:gap-5 sm:px-5 sm:py-9"
 						>
 							<MessageScrollerItem messageId="shared-chat-notice">
+								{!conversation.ai.enabled ? <AiDisabledNotice /> : null}
 								<div className="rounded-lg border bg-card px-4 py-3 text-sm">
 									<p className="font-medium">
 										Shared by {conversation.ownerName}
@@ -1546,7 +1560,7 @@ function builderConversationNeedsPolling(conversation: Conversation): boolean {
 function sharedConversationNeedsPolling(
 	conversation: SharedConversation | undefined,
 ): boolean {
-	if (!conversation?.events.length) return false;
+	if (!conversation?.ai.enabled || !conversation.events.length) return false;
 
 	return !eventStreamSettled(conversation.events);
 }

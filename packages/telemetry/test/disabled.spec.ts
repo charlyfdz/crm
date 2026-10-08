@@ -2,12 +2,22 @@ import { describe, expect, it } from "bun:test";
 import { DISABLE_VARIABLES, telemetryDisabled } from "../src/disabled";
 
 describe("telemetryDisabled", () => {
-	it("is off by default", () => {
-		expect(telemetryDisabled({})).toBe(false);
+	it("disables reporting by default", () => {
+		expect(telemetryDisabled({})).toBe(true);
+	});
+
+	it("requires explicit opt-in", () => {
+		expect(telemetryDisabled({ CRM_TELEMETRY_ENABLED: "true" })).toBe(false);
+	});
+
+	it("disable switches override opt-in", () => {
+		for (const name of DISABLE_VARIABLES) {
+			expect(telemetryDisabled({ CRM_TELEMETRY_ENABLED: "true", [name]: "1" })).toBe(true);
+		}
 	});
 
 	it("sends nothing from a test run, whatever else is set", () => {
-		expect(telemetryDisabled({ NODE_ENV: "test" })).toBe(true);
+			expect(telemetryDisabled({ NODE_ENV: "test", CRM_TELEMETRY_ENABLED: "true" })).toBe(true);
 	});
 
 	it("honours CRM_TELEMETRY_DISABLED", () => {
@@ -26,7 +36,7 @@ describe("telemetryDisabled", () => {
 
 	it("does not read an empty or negative value as a yes", () => {
 		for (const value of ["", " ", "0", "false", "no"]) {
-			expect(telemetryDisabled({ CRM_TELEMETRY_DISABLED: value })).toBe(false);
+			expect(telemetryDisabled({ CRM_TELEMETRY_ENABLED: "true", CRM_TELEMETRY_DISABLED: value })).toBe(false);
 		}
 	});
 

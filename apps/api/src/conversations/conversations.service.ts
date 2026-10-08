@@ -1,5 +1,6 @@
 import { WORKSPACE_ID } from "@crm/auth";
 import { type Db, type Prisma, Prisma as PrismaNamespace } from "@crm/db";
+import { aiFeaturePolicy, isAiEnabled } from "@crm/env/features";
 import { readAgentManifestSummary } from "@crm/validation/agent-manifest";
 import {
 	type BuilderQuestion,
@@ -13,6 +14,7 @@ import {
 	Optional,
 } from "@nestjs/common";
 import { AgentTriggerService } from "../agent/agent-trigger.service";
+import { requireApiAiEnabled } from "../agent/ai-policy";
 import { InjectDatabase } from "../database/database.constants";
 import {
 	builderMessageWithAttachments,
@@ -128,8 +130,9 @@ export class ConversationsService {
 					(!row.lastReadAt || row.lastAssistantAt > row.lastReadAt),
 			);
 			const working =
-				row.submissions.length > 0 ||
-				Boolean(row.sessionId && !row.continuationToken);
+				isAiEnabled() &&
+				(row.submissions.length > 0 ||
+					Boolean(row.sessionId && !row.continuationToken));
 
 			return {
 				id: row.id,
@@ -141,6 +144,7 @@ export class ConversationsService {
 				lastMessageAt: row.lastMessageAt.toISOString(),
 				lastAssistantAt: row.lastAssistantAt?.toISOString() ?? null,
 				unread,
+				ai: aiFeaturePolicy(),
 				state:
 					row._count.submissions > 0 && row.agent?.status === "LIVE"
 						? "deployed"
@@ -357,6 +361,7 @@ export class ConversationsService {
 
 		return {
 			...conversation,
+			ai: aiFeaturePolicy(),
 			pendingQuestion: pendingBuilderQuestionOf(pendingInputRequest),
 			lastMessageAt: row.lastMessageAt.toISOString(),
 			lastAssistantAt: row.lastAssistantAt?.toISOString() ?? null,
@@ -400,6 +405,7 @@ export class ConversationsService {
 		input: BuilderConversationCreateInput,
 		userId: string,
 	): Promise<{ id: string }> {
+		requireApiAiEnabled();
 		await this.assertWorkspaceMember(userId);
 		const existing = await this.requestByClientId(input.clientRequestId);
 
@@ -445,6 +451,7 @@ export class ConversationsService {
 		input: BuilderConversationSubmitInput,
 		userId: string,
 	): Promise<{ id: string }> {
+		requireApiAiEnabled();
 		await this.assertWorkspaceMember(userId);
 		const existing = await this.requestByClientId(input.clientRequestId);
 
@@ -505,6 +512,7 @@ export class ConversationsService {
 		input: BuilderQuestionResponseInput,
 		userId: string,
 	): Promise<{ id: string }> {
+		requireApiAiEnabled();
 		await this.assertWorkspaceMember(userId);
 		const existing = await this.requestByClientId(input.clientRequestId);
 

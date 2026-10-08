@@ -1,4 +1,5 @@
 import { EnrichmentStatus } from "@crm/db";
+import { requireAiEnabled } from "@crm/env/features";
 import { fieldBackfillPayload } from "@crm/validation/field-backfill";
 import { APP_AUTH, type AppAuth } from "./app-auth";
 import { brandOutcome, runBrand } from "./brand";
@@ -27,6 +28,7 @@ export const RESEARCH_BATCH = DISPATCH.research.batch;
 export const RESEARCH_LEASE_MS = DISPATCH.research.leaseMs;
 
 export async function runVisibleLane(signal?: AbortSignal): Promise<number> {
+	requireAiEnabled();
 	let handled = 0;
 
 	while (handled < VISIBLE_BATCH) {
@@ -54,6 +56,7 @@ export async function runDirect(
 	handle: (task: LeasedTask) => Promise<void> = handleDirect,
 	timeoutMs: number = DISPATCH.sweep.itemTimeoutMs,
 ): Promise<void> {
+	requireAiEnabled();
 	const work: Promise<DirectOutcome> = handle(task).then(
 		() => ({ finished: true }) as const,
 		(error) => ({ finished: false, reason: reasonOf(error) }) as const,
@@ -135,6 +138,7 @@ export async function runResearchLane(
 	start: (task: LeasedTask) => Promise<{ id: string }>,
 	signal?: AbortSignal,
 ): Promise<number> {
+	requireAiEnabled();
 	if (signal?.aborted) return 0;
 
 	const tasks = await claimDue(
@@ -316,6 +320,7 @@ export function dispatchHealth() {
 
 export const drainAll = collapsing(
 	async (start: (task: LeasedTask) => Promise<{ id: string }>) => {
+		requireAiEnabled();
 		if (unsettledSweeps.size >= DISPATCH.sweep.maxAbandoned) {
 			lastSweepError =
 				"An abandoned dispatch sweep is still in flight, so this sweep did not start.";

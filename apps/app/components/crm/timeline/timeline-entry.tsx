@@ -1,19 +1,16 @@
 "use client";
 
 import { DealStage } from "@crm/db/enums";
-import { Checkbox } from "@crm/ui/components/checkbox";
 import { StatusIndicator } from "@crm/ui/components/status-indicator";
 import { cn } from "@crm/ui/lib/utils";
-import { useMutation } from "@tanstack/react-query";
-import { toast } from "sonner";
 import { z } from "zod";
 import { RecordLink } from "@/components/crm/record-sheet/record-link";
 import { LocalDateTime, LocalRelativeTime } from "@/components/local-date-time";
 import { activityLabel } from "@/lib/activity-presentation";
 import { dealStageLabel } from "@/lib/deal-stage";
-import { useCrmCache } from "@/lib/trpc/cache";
-import { useTRPC } from "@/lib/trpc/client";
 import type { RouterOutputs } from "@/lib/trpc/types";
+import { ActivityTaskEditControl } from "../activity-tasks/activity-task-controls";
+import { TASK_PRIORITIES } from "../activity-tasks/task-form-state";
 import { ActivityIcon } from "./activity-icon";
 import { EmailThreadEntry } from "./email-thread-entry";
 import { MeetingEntry } from "./meeting-entry";
@@ -28,7 +25,12 @@ const TIME_OPTIONS: Intl.DateTimeFormatOptions = {
 };
 
 const stageChange = z
-	.object({ from: z.enum(DealStage), to: z.enum(DealStage) })
+	.object({
+		from: z.enum(DealStage),
+		to: z.enum(DealStage),
+		fromStageName: z.string().nullable().optional(),
+		toStageName: z.string().optional(),
+	})
 	.nullable()
 	.catch(null);
 
@@ -45,16 +47,6 @@ export function TimelineEntry({
 	entry: TimelineEntryData;
 	anchor: TimelineAnchor;
 }) {
-	const trpc = useTRPC();
-	const cache = useCrmCache();
-
-	const complete = useMutation(
-		trpc.activities.complete.mutationOptions({
-			onSuccess: () => cache.activity(),
-			onError: (error) => toast.error(error.message),
-		}),
-	);
-
 	const isTask = entry.type === "TASK";
 	const done = entry.completedAt !== null;
 	const overdue =
@@ -75,7 +67,7 @@ export function TimelineEntry({
 		: entry.createdBy.name;
 
 	const headline = change
-		? `${dealStageLabel(change.from)} → ${dealStageLabel(change.to)}`
+		? `${change.fromStageName ?? dealStageLabel(change.from)} → ${change.toStageName ?? dealStageLabel(change.to)}`
 		: entry.subject;
 
 	const here = anchorId(anchor);
@@ -90,20 +82,9 @@ export function TimelineEntry({
 	return (
 		<li className="flex gap-2.5 py-2">
 			<span className="mt-0.5 shrink-0 text-muted-foreground">
-				{isTask ? (
-					<Checkbox
-						checked={done}
-						disabled={complete.isPending}
-						aria-label={done ? "Mark as not done" : "Mark as done"}
-						onCheckedChange={(checked) =>
-							complete.mutate({ id: entry.id, completed: checked === true })
-						}
-					/>
-				) : (
-					<span role="img" aria-label={activityLabel(entry.type)}>
-						<ActivityIcon type={entry.type} />
-					</span>
-				)}
+				<span role="img" aria-label={activityLabel(entry.type)}>
+					<ActivityIcon type={entry.type} />
+				</span>
 			</span>
 
 			<div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -155,6 +136,20 @@ export function TimelineEntry({
 						attendeeCount={entry.calendarEvent.attendeeCount}
 						conferenceUrl={entry.calendarEvent.conferenceUrl}
 					/>
+				) : null}
+
+				{isTask ? (
+					<div className="flex flex-wrap items-center gap-2">
+						<span className="text-muted-foreground">
+							Responsable: {entry.assignee?.name ?? "Sin responsable"} ·{" "}
+							{
+								TASK_PRIORITIES.find(
+									(priority) => priority.value === entry.priority,
+								)?.label
+							}
+						</span>
+						<ActivityTaskEditControl task={entry} />
+					</div>
 				) : null}
 
 				{entry.emailThread ? (

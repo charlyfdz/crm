@@ -6,13 +6,14 @@ import Undo from "@carbon/icons-react/es/Undo";
 import {
 	DropdownMenuGroup,
 	DropdownMenuItem,
+	DropdownMenuLabel,
 	DropdownMenuSeparator,
 	DropdownMenuSub,
 	DropdownMenuSubContent,
 	DropdownMenuSubTrigger,
 } from "@crm/ui/components/dropdown-menu";
 import { formatCount } from "@crm/ui/lib/format";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -22,6 +23,11 @@ import {
 	reportBulk,
 } from "@/components/crm/bulk-actions";
 import { CompanyMenuSearch } from "@/components/crm/company-picker";
+import {
+	type BulkRecord,
+	useRecordSelection,
+} from "@/components/crm/use-record-selection";
+import { useRecordOwners } from "@/components/crm/use-record-viewer";
 import { useCrmCache } from "@/lib/trpc/cache";
 import { useTRPC } from "@/lib/trpc/client";
 
@@ -33,14 +39,17 @@ export function ContactsBulkActions({
 	ids,
 	onDone,
 	archived,
+	rows,
 }: {
 	ids: string[];
 	onDone: () => void;
 	archived: boolean;
+	rows: BulkRecord[];
 }) {
 	const trpc = useTRPC();
 	const cache = useCrmCache();
-	const users = useQuery(trpc.users.list.queryOptions());
+	const access = useRecordSelection(ids, rows);
+	const users = useRecordOwners(access.canAssign && !archived);
 	const [menuOpen, setMenuOpen] = useState(false);
 	const [confirming, setConfirming] = useState(false);
 	const companySearch = useRef<HTMLInputElement>(null);
@@ -85,8 +94,8 @@ export function ContactsBulkActions({
 
 	const archive = useMutation(
 		trpc.contacts.bulkArchive.mutationOptions({
-			onSuccess: async (result, variables) => {
-				await cache.removedMany({ kind: "contact", ids: variables.ids });
+			onSuccess: async (result) => {
+				await cache.contact();
 				reportBulk(result, (count) => `${contacts(count)} archived.`);
 				onDone();
 			},
@@ -107,8 +116,8 @@ export function ContactsBulkActions({
 
 	const purge = useMutation(
 		trpc.contacts.bulkPurge.mutationOptions({
-			onSuccess: async (result, variables) => {
-				await cache.removedMany({ kind: "contact", ids: variables.ids });
+			onSuccess: async (result) => {
+				await cache.contact();
 				reportBulk(result, (count) => `${contacts(count)} deleted forever.`);
 				setConfirming(false);
 				onDone();
@@ -122,30 +131,44 @@ export function ContactsBulkActions({
 
 		return (
 			<>
-				<BulkActionsMenu pending={pending}>
+				<BulkActionsMenu pending={pending || access.loading || access.error}>
+					<DropdownMenuLabel>
+						{access.restoreIds.length} de {ids.length} restaurables
+					</DropdownMenuLabel>
 					<DropdownMenuGroup>
-						<DropdownMenuItem onSelect={() => restore.mutate({ ids })}>
+						<DropdownMenuItem
+							disabled={!access.restoreIds.length}
+							onSelect={() => {
+								if (access.restoreIds.length)
+									restore.mutate({ ids: access.restoreIds });
+							}}
+						>
 							<Undo />
-							Restore
+							Restaurar
 						</DropdownMenuItem>
 					</DropdownMenuGroup>
 					<DropdownMenuSeparator />
 					<DropdownMenuGroup>
 						<DropdownMenuItem
 							variant="destructive"
+							disabled={!access.purgeIds.length}
 							onSelect={() => setConfirming(true)}
 						>
-							Delete forever
+							Eliminar definitivamente ({access.purgeIds.length})
 						</DropdownMenuItem>
 					</DropdownMenuGroup>
 				</BulkActionsMenu>
 
 				<BulkDeleteDialog
-					open={confirming}
+					open={confirming && access.purgeIds.length > 0}
 					onOpenChange={setConfirming}
-					title={`Delete ${contacts(ids.length)} forever?`}
+					title={`¿Eliminar ${access.purgeIds.length} registros definitivamente?`}
 					description="Their email addresses are suppressed, so the inbox sync will not file them again. This cannot be undone."
-					onConfirm={() => purge.mutate({ ids })}
+					pending={pending}
+					disabled={!access.purgeIds.length}
+					onConfirm={() => {
+						if (access.purgeIds.length) purge.mutate({ ids: access.purgeIds });
+					}}
 				/>
 			</>
 		);
@@ -159,17 +182,26 @@ export function ContactsBulkActions({
 
 	return (
 		<BulkActionsMenu
-			pending={pending}
+			pending={pending || access.loading || access.error}
 			open={menuOpen}
 			onOpenChange={setMenuOpen}
 		>
-			<BulkOwnerMenu
-				users={users.data ?? []}
-				unassignedLabel="Nobody"
-				onSelect={(ownerId) => assignOwner.mutate({ ids, ownerId })}
-			/>
+			<DropdownMenuLabel>
+				{access.editIds.length} de {ids.length} editables
+			</DropdownMenuLabel>
+			{access.canAssign && users.ready && access.editIds.length > 0 ? (
+				<BulkOwnerMenu
+					users={users.users}
+					unassignedLabel="Sin responsable"
+					onSelect={(ownerId) =>
+						assignOwner.mutate({ ids: access.editIds, ownerId })
+					}
+				/>
+			) : null}
 			<DropdownMenuSub>
-				<DropdownMenuSubTrigger>Move to company</DropdownMenuSubTrigger>
+				<DropdownMenuSubTrigger disabled={!access.editIds.length}>
+					Mover a empresa ({access.editIds.length})
+				</DropdownMenuSubTrigger>
 				<DropdownMenuSubContent
 					className="w-64 p-0"
 					onFocus={(event) => {
@@ -183,22 +215,35 @@ export function ContactsBulkActions({
 						inputRef={companySearch}
 						onSelect={(companyId) => {
 							setMenuOpen(false);
-							setCompany.mutate({ ids, companyId });
+							if (access.editIds.length)
+								setCompany.mutate({ ids: access.editIds, companyId });
 						}}
 					/>
 				</DropdownMenuSubContent>
 			</DropdownMenuSub>
 			<DropdownMenuGroup>
-				<DropdownMenuItem onSelect={() => enrich.mutate({ ids })}>
+				<DropdownMenuItem
+					disabled={!access.enrichIds.length}
+					onSelect={() => {
+						if (access.enrichIds.length)
+							enrich.mutate({ ids: access.enrichIds });
+					}}
+				>
 					<Renew />
-					Re-enrich
+					Investigar con IA ({access.enrichIds.length})
 				</DropdownMenuItem>
 			</DropdownMenuGroup>
 			<DropdownMenuSeparator />
 			<DropdownMenuGroup>
-				<DropdownMenuItem onSelect={() => archive.mutate({ ids })}>
+				<DropdownMenuItem
+					disabled={!access.archiveIds.length}
+					onSelect={() => {
+						if (access.archiveIds.length)
+							archive.mutate({ ids: access.archiveIds });
+					}}
+				>
 					<Archive />
-					Archive
+					Archivar ({access.archiveIds.length})
 				</DropdownMenuItem>
 			</DropdownMenuGroup>
 		</BulkActionsMenu>

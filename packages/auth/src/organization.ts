@@ -110,8 +110,8 @@ export async function ensureWorkspaceMembership(
 	}
 }
 
-export function toWorkspaceRole(value: string): WorkspaceRole {
-	return isWorkspaceRole(value) ? value : "member";
+export function toWorkspaceRole(value: string): WorkspaceRole | null {
+	return isWorkspaceRole(value) ? value : null;
 }
 
 export type WorkspaceMemberReader = Pick<Db, "member">;
@@ -122,8 +122,8 @@ export async function workspaceRoleOf(
 ): Promise<WorkspaceRole | null> {
 	const member = await client.member.findUnique({
 		where: { organizationId_userId: { organizationId: WORKSPACE_ID, userId } },
-		select: { role: true },
+		select: { role: true, suspendedAt: true },
 	});
 
-	return member ? toWorkspaceRole(member.role) : null;
+	return member && !member.suspendedAt ? toWorkspaceRole(member.role) : null;
 }

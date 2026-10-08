@@ -1,3 +1,4 @@
+import { aiFeaturePolicy } from "@crm/env/features";
 import { defineSchedule } from "eve/schedules";
 import crm from "../channels/crm";
 import { sweepBlankFacts } from "../lib/blank-facts";
@@ -12,6 +13,12 @@ import { reconcileStaleTasks } from "../lib/stale-tasks";
 export default defineSchedule({
 	cron: "* * * * *",
 	async run({ receive, waitUntil, appAuth }) {
+		const policy = aiFeaturePolicy();
+		if (!policy.enabled) {
+			console.info(`[agent] ${policy.code}: ${policy.reason}`);
+			return;
+		}
+
 		waitUntil(
 			Promise.all([
 				sweepBlankFacts(),

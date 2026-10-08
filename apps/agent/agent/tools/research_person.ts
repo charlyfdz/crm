@@ -1,3 +1,4 @@
+import { aiFeaturePolicy } from "@crm/env/features";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { enabled, unavailable } from "../lib/capabilities";
@@ -19,6 +20,8 @@ export default defineTool({
 			.describe("Reason over more sources. Slower, better for prep briefs."),
 	}),
 	async execute({ question, deep }) {
+		const policy = aiFeaturePolicy();
+		if (!policy.enabled) return { ok: false as const, ...policy };
 		if (!(await enabled("PERPLEXITY_API_KEY")))
 			return unavailable("PERPLEXITY_API_KEY");
 

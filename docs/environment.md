@@ -43,14 +43,34 @@ the three that is genuinely optional on its own — set it to your tenant's GUID
 refuse other tenants at Microsoft instead of at `ALLOWED_SIGN_IN`. There is **no
 Microsoft equivalent of `hd`**: `tenantId` is the whole of it.
 
-**Neither pair is required, but an install wants one of them or an SSO provider** —
-with none, the sign-in page says so by name rather than rendering nothing.
+Neither pair is required. Local email/password access works without an external identity provider.
+An operator provisions accounts with `auth:provision`. Public registration remains closed.
 
 **`ALLOWED_SIGN_IN`** — comma-separated whole domains or single addresses (bare
 addresses exist for a solo self-hoster, where `gmail.com` would be an open door). **One
 list, read by the sign-in guard *and* the sync's "which side is external" decision** —
 if they drifted a colleague would be refused at the door or filed as a lead. **An empty
 list fails closed.** Parsed on demand. `packages/auth/src/workspace.ts`.
+
+The list defines eligible addresses. It does not create accounts or assign workspace roles.
+Each login also requires an existing account and workspace membership.
+
+## PostgreSQL pool limits
+
+Each app process owns a pool. Budget the sum across the app, API, agent and operations processes.
+The pure parser lives in `@crm/db/pool-config`. API startup uses the same parser.
+Blank values use defaults. Invalid values stop startup without logging the connection string.
+
+| Variable | Default | Maximum |
+| --- | --- | --- |
+| `DATABASE_POOL_MAX` | 10 | 100 |
+| `DATABASE_POOL_CONNECTION_TIMEOUT_MS` | 10000 | 2147483647 |
+| `DATABASE_POOL_IDLE_TIMEOUT_MS` | 30000 | 2147483647 |
+| `DATABASE_POOL_MAX_LIFETIME_SECONDS` | 1800 | 2147483 |
+| `DATABASE_POOL_KEEPALIVE_INITIAL_DELAY_MS` | 10000 | 2147483647 |
+
+All values are positive integers. Production pool sizes require a measured workload and PostgreSQL connection budget.
+Pool rotation does not prove recovery from the earlier closed-connection error.
 
 ## Where things are
 
@@ -105,9 +125,10 @@ and lists every variable the API reads and nothing else.
 
 ## Optional: what the agent can do
 
-Every outside source is optional and the agent runs with none. A missing key removes a
-place to look; **never an error, never throws**. `agent/lib/capabilities.ts` is the
-single place that knows what is set.
+`CRM_AI_ENABLED` defaults to disabled. Only the literal `true` enables AI.
+Provider keys never enable AI implicitly. The manual CRM works with AI disabled.
+Enabling AI permits configured external calls and provider costs.
+`agent/lib/capabilities.ts` reports available sources after the installation policy permits AI.
 
 | Variable | What it adds |
 | --- | --- |
@@ -130,8 +151,8 @@ General — an admin who cannot redeploy cannot set a variable.
 - **It buys two places to look, not one.** Company brand data by domain, and a person
   read back from a LinkedIn URL already on their record. Both capabilities in
   `agent/lib/capabilities.ts` turn on and off with this one key.
-- **An install that had the variable is asked again**: no migration, no fallback, and
-  **the gate cannot be dismissed**.
+- Research setup is optional. `Continuar sin IA` returns to the manual CRM without saving a key.
+- Research setup never enables the installation's AI policy.
 - **Nothing is lost while waiting.** A keyless `brand` task settles `SKIPPED` *before*
   anything marks the row `RUNNING`, and `settle` only overwrites `RUNNING` — so the
   company stays `PENDING`, which the sweep re-queues
@@ -182,10 +203,11 @@ feature is only ever wrong), **no `GOOGLE_WORKSPACE_DOMAIN`** (`ALLOWED_SIGN_IN`
 says who is internal — two sources is how a colleague becomes a lead), **no
 `GMAIL_BACKFILL_DAYS`**, **no `OUTLOOK_BACKFILL_DAYS`**, **no rate provider variable**.
 
-## Telemetry is on, and turning it off is one variable
+## Telemetry is disabled by default
 
-`CRM_TELEMETRY_DISABLED="1"` — or `DO_NOT_TRACK=1`, honoured identically — and nothing
-is sent. No client is constructed, so there is no queue waiting to flush later.
+`CRM_TELEMETRY_ENABLED` requires an explicit opt-in: `1`, `true`, `yes` or `on`.
+`CRM_TELEMETRY_DISABLED=1` and `DO_NOT_TRACK=1` override that opt-in.
+Tests always disable telemetry. Disabled telemetry constructs no client and queues no events.
 
 - **Server side only**, `posthog-node` in the API and the agent. **`posthog-js`
   appears once, on the `trycrm.ai` landing page**, and nowhere a record can be
@@ -203,7 +225,18 @@ is sent. No client is constructed, so there is no queue waiting to flush later.
 - Declared in `env.validation.ts` as optional, like everything else here. Every
   event and the never-sent list are in **`docs/telemetry.md`**.
 
-## Not env vars
+## Deployment-only configuration
+
+The root `.env.example` also documents inputs read by `deploy/compose.yml` and `deploy/scripts`.
+The root Turbo passthrough includes these inputs. The API does not validate variables it never reads.
+
+These include installation identity, release, pinned base images, database credentials, Redis credentials, and per-service resource limits.
+Documented placeholders remain empty and commented. They establish no secret, quota, installed service, or permission.
+Only an accepted capacity record supplies production limits. The shared homelab budget never becomes a CRM allocation automatically.
+
+Use [the deployment contract](deployment/README.md) and [integrated verification](verification/2026-10-02-local-foundations.md).
+
+## Non-environment constants and optional cache
 
 - **Cache TTL** — `DEFAULT_TTL_MS` (60s) in `cache.module.ts`; `CACHE_TTL_MS` overrides.
 - **Redis** — optional; without `REDIS_URL` the cache is per-instance in-memory, which

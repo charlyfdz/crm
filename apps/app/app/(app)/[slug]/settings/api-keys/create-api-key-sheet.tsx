@@ -28,7 +28,7 @@ import {
 	SheetTrigger,
 } from "@crm/ui/components/sheet";
 import { Spinner } from "@crm/ui/components/spinner";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { parseAsBoolean, useQueryState } from "nuqs";
 import { type ComponentProps, Suspense, useId, useState } from "react";
 import { toast } from "sonner";
@@ -44,7 +44,6 @@ const EXPIRATION_OPTIONS = [
 	{ value: "30", label: "30 days" },
 	{ value: "90", label: "90 days" },
 	{ value: "365", label: "1 year" },
-	{ value: "never", label: "No expiration" },
 ] as const;
 
 type ExpirationValue = (typeof EXPIRATION_OPTIONS)[number]["value"];
@@ -71,6 +70,10 @@ export function CreateApiKeySheet() {
 function CreateApiKeyForm() {
 	const trpc = useTRPC();
 	const cache = useCrmCache();
+	const workspace = useQuery(trpc.workspace.get.queryOptions());
+	const canCreate =
+		workspace.data?.viewerRole === "owner" ||
+		workspace.data?.viewerRole === "admin";
 
 	const nameId = useId();
 	const expirationId = useId();
@@ -100,7 +103,7 @@ function CreateApiKeyForm() {
 		<>
 			<Sheet open={open} onOpenChange={(next) => setOpen(next || null)}>
 				<SheetTrigger asChild>
-					<NewApiKeyButton />
+					<NewApiKeyButton disabled={!canCreate} />
 				</SheetTrigger>
 
 				<SheetContent side="right">
@@ -119,8 +122,7 @@ function CreateApiKeyForm() {
 							event.preventDefault();
 							create.mutate({
 								name: name.trim(),
-								expiresInDays:
-									expiration === "never" ? null : Number(expiration),
+								expiresInDays: Number(expiration),
 							});
 						}}
 					>
@@ -171,7 +173,7 @@ function CreateApiKeyForm() {
 						<Button
 							type="submit"
 							form={FORM}
-							disabled={!name.trim() || create.isPending}
+							disabled={!canCreate || !name.trim() || create.isPending}
 						>
 							{create.isPending ? <Spinner /> : null}
 							Create key

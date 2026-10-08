@@ -1,4 +1,5 @@
 import { db, EnrichmentStatus } from "@crm/db";
+import { AI_DISABLED_REASON, isAiEnabled } from "@crm/env/features";
 import { mirrorBrandImages } from "./brand-images";
 import { brandToUpdate, filledFields, stillFillable } from "./brand-mapping";
 import { brandByDomain, contextDevEnabled } from "./context-dev";
@@ -51,6 +52,7 @@ export async function runBrand({
 	fresh?: boolean;
 	spend?: Spend;
 }): Promise<BrandResult> {
+	if (!isAiEnabled()) return { enriched: false, reason: AI_DISABLED_REASON };
 	const company = await db.company.findUnique({
 		where: { id: companyId },
 		select: COMPANY_FIELDS,

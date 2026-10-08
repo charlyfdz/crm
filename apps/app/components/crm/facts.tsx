@@ -8,6 +8,7 @@ import { LocalDateTime } from "@/components/local-date-time";
 import type { ContactFact } from "@/lib/contact-facts";
 import { useCrmCache } from "@/lib/trpc/cache";
 import { useTRPC } from "@/lib/trpc/client";
+import { useRecordReadOnly } from "./record-edit-scope";
 
 export function FactProvenance({ fact }: { fact: ContactFact }) {
 	return (
@@ -34,6 +35,7 @@ export function FactSuggestion({
 }) {
 	const trpc = useTRPC();
 	const cache = useCrmCache();
+	const readOnly = useRecordReadOnly();
 
 	const decide = useMutation(
 		trpc.contacts.decideFact.mutationOptions({
@@ -54,8 +56,13 @@ export function FactSuggestion({
 			value={fact.value}
 			rationale={fact.evidence.map((item) => item.detail).join(" · ")}
 			pending={decide.isPending}
-			onAccept={() => decide.mutate({ factId: fact.id, decision: "accept" })}
-			onDismiss={() => decide.mutate({ factId: fact.id, decision: "dismiss" })}
+			readOnly={readOnly}
+			onAccept={() => {
+				if (!readOnly) decide.mutate({ factId: fact.id, decision: "accept" });
+			}}
+			onDismiss={() => {
+				if (!readOnly) decide.mutate({ factId: fact.id, decision: "dismiss" });
+			}}
 		/>
 	);
 }

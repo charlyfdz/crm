@@ -1,12 +1,15 @@
 import { DealStage } from "@crm/db";
 import { FIELD_ENTITIES, FIELD_TYPES } from "@crm/db/fields";
+import { MAX_AMOUNT_CENTS } from "@crm/validation/deal-money";
 import { z } from "zod";
 import { bulkIdsInput } from "../crm/bulk";
 import { currencyCode } from "../currency/currency.contracts";
 import { recordFieldValues } from "../fields/fields.contracts";
+import {
+	PIPELINE_LIMITS,
+	pipelineStageOutput,
+} from "../pipelines/pipelines.contracts";
 import { listInput } from "../trpc/list-input";
-
-export const MAX_AMOUNT_CENTS = 99_999_999_999_999;
 
 const amountCents = z
 	.number()
@@ -33,6 +36,8 @@ export const dealListInput = listInput.extend({
 	closing: z.array(z.string()).default([]),
 	fields: z.record(z.string(), z.array(z.string())).default({}),
 	archived: z.boolean().default(false),
+	pipelineId: z.string().optional(),
+	pipelineStageIds: z.array(z.string()).optional(),
 });
 
 export type DealListInput = z.infer<typeof dealListInput>;
@@ -46,6 +51,9 @@ export const dealCreateInput = z.object({
 	companyId: z.string().min(1, "A deal belongs to a company."),
 	ownerId: z.string().min(1, "A deal needs an owner."),
 	stage: stageEnum.optional(),
+	pipelineId: z.string().min(1).optional(),
+	pipelineStageId: z.string().min(1).optional(),
+	closedReason: z.string().trim().max(PIPELINE_LIMITS.reason).optional(),
 	amountCents,
 	currency: currencyCode.optional(),
 	expectedCloseDate: z.string().nullable().optional(),
@@ -75,8 +83,10 @@ export const dealIdInput = z.object({ id: z.string() });
 
 export const setStageInput = z.object({
 	id: z.string(),
-	stage: stageEnum,
-	closedReason: z.string().trim().optional(),
+	stage: stageEnum.optional(),
+	pipelineId: z.string().min(1).optional(),
+	pipelineStageId: z.string().min(1).optional(),
+	closedReason: z.string().trim().max(PIPELINE_LIMITS.reason).optional(),
 });
 
 export type SetStageInput = z.infer<typeof setStageInput>;
@@ -120,10 +130,16 @@ export const dealBulkOwnerInput = bulkIdsInput.extend({
 
 export type DealBulkOwnerInput = z.infer<typeof dealBulkOwnerInput>;
 
-export const dealBulkStageInput = bulkIdsInput.extend({
-	stage: stageEnum,
-	closedReason: z.string().trim().optional(),
-});
+export const dealBulkStageInput = bulkIdsInput
+	.extend({
+		stage: stageEnum.optional(),
+		pipelineId: z.string().min(1).optional(),
+		pipelineStageId: z.string().min(1).optional(),
+		closedReason: z.string().trim().max(PIPELINE_LIMITS.reason).optional(),
+	})
+	.refine((input) => Boolean(input.stage || input.pipelineStageId), {
+		message: "Selecciona una etapa.",
+	});
 
 export type DealBulkStageInput = z.infer<typeof dealBulkStageInput>;
 
@@ -197,6 +213,12 @@ const dealListRowOutput = z.object({
 	id: z.string(),
 	name: z.string(),
 	stage: stageEnum,
+	pipelineStage: pipelineStageOutput
+		.extend({
+			pipelineId: z.string(),
+			pipeline: z.object({ id: z.string(), name: z.string() }),
+		})
+		.nullable(),
 	currency: z.string(),
 	company: dealCompanyOutput,
 	owner: dealOwnerOutput,
@@ -229,6 +251,12 @@ export const dealDetailOutput = z.object({
 	name: z.string(),
 	description: z.string().nullable(),
 	stage: stageEnum,
+	pipelineStage: pipelineStageOutput
+		.extend({
+			pipelineId: z.string(),
+			pipeline: z.object({ id: z.string(), name: z.string() }),
+		})
+		.nullable(),
 	currency: z.string(),
 	closedReason: z.string().nullable(),
 	company: dealCompanyDetailOutput,

@@ -1,4 +1,5 @@
 import type { Db, Prisma } from "@crm/db";
+import { isAiEnabled } from "@crm/env/features";
 import { ENRICHMENT_PAGE, pageSize } from "@crm/validation/enrichment-queue";
 import { Injectable } from "@nestjs/common";
 import { InjectDatabase } from "../database/database.constants";
@@ -74,6 +75,8 @@ export class EnrichmentService {
 	constructor(@InjectDatabase() private readonly db: Db) {}
 
 	async queue(limit: number = ENRICHMENT_PAGE): Promise<EnrichmentQueue> {
+		if (!isAiEnabled())
+			return { rows: [], total: 0, scheduled: [], scheduledTotal: 0 };
 		const take = pageSize(limit);
 		const now = new Date();
 
@@ -110,6 +113,8 @@ export class EnrichmentService {
 		]);
 
 		const everyTask: QueuedTask[] = [...tasks, ...booked];
+		if (!isAiEnabled())
+			return { rows: [], total: 0, scheduled: [], scheduledTotal: 0 };
 		const contactIds = unique(everyTask.map((task) => task.contactId));
 		const companyIds = unique(everyTask.map((task) => task.companyId));
 
@@ -209,7 +214,9 @@ export class EnrichmentService {
 			});
 		}
 
-		return { rows, total, scheduled, scheduledTotal };
+		return isAiEnabled()
+			? { rows, total, scheduled, scheduledTotal }
+			: { rows: [], total: 0, scheduled: [], scheduledTotal: 0 };
 	}
 }
 

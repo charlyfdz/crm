@@ -2,15 +2,24 @@ import { describe, expect, it } from "bun:test";
 import type { Db } from "../src/client";
 import {
 	CURRENCIES,
+	CURRENCY_CODES,
+	currencyMeta,
 	currencyName,
+	DEFAULT_REPORTING_CURRENCY,
 	isCurrencyCode,
 	isWellFormedCurrency,
 	minorUnitsOf,
 	normalizeCurrency,
 } from "../src/currency";
-import { applyRate, type ResolvedRate, resolveRate } from "../src/fx";
+import {
+	applyRate,
+	convertToBase,
+	type ResolvedRate,
+	resolveRate,
+} from "../src/fx";
 import { Prisma } from "../src/generated/prisma/client";
 import { RateSource } from "../src/generated/prisma/enums";
+import { readReportingCurrency } from "../src/settings";
 
 type Row = {
 	rate: Prisma.Decimal;
@@ -62,7 +71,7 @@ describe("normalizeCurrency and isCurrencyCode", () => {
 		}
 	});
 
-	it("offers only the eleven currencies most of the world trades in", () => {
+	it("offers the supported currencies without changing their existing order", () => {
 		expect(CURRENCIES.map((entry) => entry.code)).toEqual([
 			"USD",
 			"EUR",
@@ -75,6 +84,7 @@ describe("normalizeCurrency and isCurrencyCode", () => {
 			"HKD",
 			"SGD",
 			"ZAR",
+			"MXN",
 		]);
 	});
 
@@ -95,6 +105,86 @@ describe("normalizeCurrency and isCurrencyCode", () => {
 	it("names the currencies it knows", () => {
 		expect(currencyName("jpy")).toBe("Japanese Yen");
 		expect(currencyName("ZZZ")).toBeNull();
+	});
+});
+
+describe("MXN support", () => {
+	it("normalizes and names MXN with two minor units", () => {
+		for (const input of ["MXN", "mxn", " MxN "]) {
+			expect(normalizeCurrency(input)).toBe("MXN");
+			expect(isCurrencyCode(input)).toBe(true);
+			expect(isWellFormedCurrency(input)).toBe(true);
+			expect(currencyName(input)).toBe("Mexican Peso");
+			expect(minorUnitsOf(input)).toBe(2);
+			expect(currencyMeta(input)).toEqual({
+				code: "MXN",
+				name: "Mexican Peso",
+				minorUnits: 2,
+			});
+		}
+	});
+
+	it("adds MXN once and preserves the installation fallback", () => {
+		expect(CURRENCY_CODES.filter((code) => code === "MXN")).toEqual(["MXN"]);
+		expect(new Set(CURRENCY_CODES).size).toBe(CURRENCY_CODES.length);
+		expect(DEFAULT_REPORTING_CURRENCY).toBe("USD");
+	});
+
+	it("reads MXN only from an explicit stored reporting setting", async () => {
+		const db = {
+			appSetting: { findUnique: async () => ({ reportingCurrency: " mxn " }) },
+		} as unknown as Db;
+		expect(await readReportingCurrency(db)).toBe("MXN");
+	});
+
+	it("keeps USD when no supported reporting setting exists", async () => {
+		for (const reportingCurrency of [null, "", "ZZZ"]) {
+			const db = {
+				appSetting: { findUnique: async () => ({ reportingCurrency }) },
+			} as unknown as Db;
+			expect(await readReportingCurrency(db)).toBe("USD");
+		}
+	});
+
+	it("converts an MXN identity without fetching or assuming a foreign rate", async () => {
+		const fake = fakeDb([]);
+		const converted = await convertToBase(
+			fake.db,
+			new Prisma.Decimal("123.45"),
+			" mxn ",
+			"MXN",
+		);
+		expect(converted?.baseAmount.toString()).toBe("123.45");
+		expect(converted?.baseCurrency).toBe("MXN");
+		expect(converted?.fxRate.toString()).toBe("1");
+		expect(converted?.origin).toBe("IDENTITY");
+		expect(fake.calls).toBe(0);
+	});
+
+	it("leaves an MXN foreign conversion missing when no stored rate exists", async () => {
+		const fake = fakeDb([]);
+		expect(
+			await convertToBase(fake.db, new Prisma.Decimal("123.45"), "MXN", "USD"),
+		).toBeNull();
+		expect(
+			await convertToBase(fake.db, new Prisma.Decimal("123.45"), "USD", "MXN"),
+		).toBeNull();
+		expect(fake.calls).toBe(2);
+	});
+
+	it("rounds synthetic conversions to MXN minor units and retains their evidence", () => {
+		const synthetic: ResolvedRate = {
+			rate: new Prisma.Decimal("1.2345"),
+			asOf: new Date("2026-10-02T00:00:00.000Z"),
+			origin: "MANUAL",
+			provider: null,
+		};
+		const converted = applyRate(new Prisma.Decimal("10"), synthetic, " mxn ");
+		expect(converted.baseAmount.toString()).toBe("12.35");
+		expect(converted.baseCurrency).toBe("MXN");
+		expect(converted.fxRate.toString()).toBe("1.2345");
+		expect(converted.fxRateAt).toEqual(synthetic.asOf);
+		expect(converted.origin).toBe("MANUAL");
 	});
 });
 

@@ -1,3 +1,4 @@
+import { databasePoolConfig } from "@crm/db/pool-config";
 import { plainToInstance, Type } from "class-transformer";
 import {
 	IsEnum,
@@ -33,6 +34,26 @@ export class EnvironmentVariables {
 			"DATABASE_URL is required. `docker compose up -d` starts one, or set it to any Postgres connection string.",
 	})
 	DATABASE_URL!: string;
+
+	@IsOptional()
+	@IsString()
+	DATABASE_POOL_MAX?: string;
+
+	@IsOptional()
+	@IsString()
+	DATABASE_POOL_CONNECTION_TIMEOUT_MS?: string;
+
+	@IsOptional()
+	@IsString()
+	DATABASE_POOL_IDLE_TIMEOUT_MS?: string;
+
+	@IsOptional()
+	@IsString()
+	DATABASE_POOL_MAX_LIFETIME_SECONDS?: string;
+
+	@IsOptional()
+	@IsString()
+	DATABASE_POOL_KEEPALIVE_INITIAL_DELAY_MS?: string;
 
 	@IsString()
 	@MinLength(32, {
@@ -126,6 +147,14 @@ export class EnvironmentVariables {
 	@IsOptional()
 	@IsString()
 	CRM_TELEMETRY_DISABLED?: string;
+
+	@IsOptional()
+	@IsString()
+	CRM_TELEMETRY_ENABLED?: string;
+
+	@IsOptional()
+	@IsString()
+	CRM_AI_ENABLED?: string;
 }
 
 export type RawEnvironment = Record<string, string | undefined>;
@@ -151,5 +180,6 @@ export function validateEnv(config: RawEnvironment): EnvironmentVariables {
 		);
 	}
 
+	databasePoolConfig(config);
 	return validated;
 }

@@ -1,0 +1,45 @@
+{
+  "purpose": "catálogo documental; no crea registros ni aplica migraciones",
+  "synthetic": true,
+  "profileId": "demo-entrega-a",
+  "currency": "USD",
+  "companies": [
+    { "sourceId": "A-001", "name": "Demo Consultoría Alba", "domain": "alba.example.test", "ownerId": "user-a-member" },
+    { "sourceId": "A-002", "name": "Demo Contable Bruma, Taller", "domain": "bruma.example.test", "ownerId": "user-a-member" },
+    { "sourceId": "A-003", "name": "Demo Tecnología Cauce", "domain": null, "ownerId": "user-a-admin" }
+  ],
+  "contacts": [
+    { "sourceId": "C-001", "firstName": "Lina", "lastName": "Prueba", "email": "lina@alba.example.test", "companySourceId": "A-001" },
+    { "sourceId": "C-002", "firstName": "Óscar", "lastName": "Ensayo", "email": "oscar@bruma.example.test", "companySourceId": "A-002" },
+    { "sourceId": "C-003", "firstName": "Nora", "lastName": "Demo", "email": null, "companySourceId": "A-003" }
+  ],
+  "deals": [
+    { "sourceId": "D-001", "name": "Diagnóstico empresarial ficticio", "companySourceId": "A-001", "ownerId": "user-a-member", "initialStage": "DEMO_BOOKED", "finalStage": "CLOSED_WON", "amountCents": 10000, "currency": "USD", "expectedCloseDate": null },
+    { "sourceId": "D-002", "name": "Seguimiento contable ficticio", "companySourceId": "A-002", "ownerId": "user-a-member", "initialStage": "QUALIFIED_TO_BUY", "finalStage": "CLOSED_LOST", "closedReason": "Demo: necesidad fuera del alcance ficticio", "amountCents": 20000, "currency": "USD", "expectedCloseDate": null },
+    { "sourceId": "D-003", "name": "Proyecto tecnológico ficticio", "companySourceId": "A-003", "ownerId": "user-a-admin", "initialStage": "DEMO_BOOKED", "finalStage": "DEMO_BOOKED", "amountCents": 30000, "currency": "USD", "expectedCloseDate": null },
+    { "sourceId": "D-004", "name": "Ampliación ficticia sin valor conocido", "companySourceId": "A-001", "ownerId": "user-a-member", "initialStage": "DEMO_BOOKED", "finalStage": "DEMO_BOOKED", "amountCents": null, "currency": "USD", "expectedCloseDate": null }
+  ],
+  "activities": [
+    { "sourceId": "N-001", "type": "NOTE", "dealSourceId": "D-001", "createdById": "user-a-member", "body": "Demo: se acuerda revisar alcance; no existen documentos reales" },
+    { "sourceId": "T-001", "type": "TASK", "dealSourceId": "D-001", "createdById": "user-a-member", "subject": "Demo: confirmar necesidad ficticia", "dueAt": null },
+    { "sourceId": "T-002", "type": "TASK", "dealSourceId": "D-001", "createdById": "user-a-member", "subject": "Demo: traspaso manual; no demuestra automatización", "dueAt": null }
+  ],
+  "expected": {
+    "companies": 3,
+    "contacts": 3,
+    "deals": 4,
+    "knownTotalCents": 60000,
+    "unknownAmounts": 1,
+    "openCount": 2,
+    "openKnownCents": 30000,
+    "wonCount": 1,
+    "wonCents": 10000,
+    "lostCount": 1,
+    "lostCents": 20000,
+    "archiveDealSourceId": "D-001",
+    "activeCountAfterArchive": 3,
+    "activeKnownCentsAfterArchive": 50000
+  },
+  "executionResult": null,
+  "clientAcceptance": null
+}

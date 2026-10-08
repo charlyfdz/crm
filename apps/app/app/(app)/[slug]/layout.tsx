@@ -1,3 +1,4 @@
+import { isAiEnabled } from "@crm/env/features";
 import { notFound, unstable_rethrow } from "next/navigation";
 import { connection } from "next/server";
 import { Suspense } from "react";
@@ -66,6 +67,7 @@ async function WorkspaceHeader({
 	return (
 		<HydrateClient>
 			<AppHeader
+				aiEnabled={isAiEnabled()}
 				user={{
 					name: user.name,
 					email: user.email,

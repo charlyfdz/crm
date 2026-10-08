@@ -18,6 +18,7 @@ import { Button } from "@crm/ui/components/button";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
+	DropdownMenuGroup,
 	DropdownMenuItem,
 	DropdownMenuTrigger,
 } from "@crm/ui/components/dropdown-menu";
@@ -28,15 +29,20 @@ import { toast } from "sonner";
 import { useCrmCache } from "@/lib/trpc/cache";
 import { useTRPC } from "@/lib/trpc/client";
 import {
+	type ControlledRecord,
+	recordControls,
+} from "../record-control-policy";
+import { useRecordViewer } from "../use-record-viewer";
+import {
 	type RecordKind,
 	type RecordRef,
 	useRecordStack,
 } from "./record-stack";
 
 const NOUN = {
-	company: "company",
-	contact: "contact",
-	deal: "deal",
+	company: "empresa",
+	contact: "contacto",
+	deal: "oportunidad",
 } satisfies Record<RecordKind, string>;
 
 const RECORD_PROCEDURES = {
@@ -109,18 +115,23 @@ export function RecordActions({
 	name,
 	consequence,
 	archivedAt,
+	owner,
 }: {
 	record: RecordRef;
 	name: string;
 	consequence: string;
 	archivedAt: string | null;
+	owner: ControlledRecord["owner"];
 }) {
+	const { viewer } = useRecordViewer();
+	const access = recordControls(viewer, { id: record.id, owner, archivedAt });
 	const [confirming, setConfirming] = useState(false);
 	const archive = useArchiveRecord(record);
 	const restore = useRestoreRecord(record);
 	const purge = usePurgeRecord(record);
 
 	const pending = archive.isPending || restore.isPending || purge.isPending;
+	if (!access.canArchive && !access.canRestore && !access.canPurge) return null;
 
 	return (
 		<>
@@ -128,51 +139,70 @@ export function RecordActions({
 				<DropdownMenuTrigger asChild>
 					<Button variant="ghost" size="icon-sm" disabled={pending}>
 						<Icon icon={OverflowMenuVertical} />
-						<span className="sr-only">More actions</span>
+						<span className="sr-only">Acciones del registro</span>
 					</Button>
 				</DropdownMenuTrigger>
 				<DropdownMenuContent align="end" className="min-w-44">
-					{archivedAt ? (
-						<>
+					<DropdownMenuGroup>
+						{access.canRestore ? (
 							<DropdownMenuItem
-								onSelect={() => restore.mutate({ id: record.id })}
+								disabled={pending}
+								onSelect={() => {
+									if (access.canRestore) restore.mutate({ id: record.id });
+								}}
 							>
 								<Icon icon={Undo} />
-								Restore {NOUN[record.kind]}
+								Restaurar {NOUN[record.kind]}
 							</DropdownMenuItem>
+						) : null}
+						{access.canPurge ? (
 							<DropdownMenuItem
 								variant="destructive"
+								disabled={pending}
 								onSelect={() => setConfirming(true)}
 							>
 								<Icon icon={TrashCan} />
-								Delete {NOUN[record.kind]} forever
+								Eliminar {NOUN[record.kind]} definitivamente
 							</DropdownMenuItem>
-						</>
-					) : (
-						<DropdownMenuItem
-							onSelect={() => archive.mutate({ id: record.id })}
-						>
-							<Icon icon={Archive} />
-							Archive {NOUN[record.kind]}
-						</DropdownMenuItem>
-					)}
+						) : null}
+						{access.canArchive ? (
+							<DropdownMenuItem
+								disabled={pending}
+								onSelect={() => {
+									if (access.canArchive) archive.mutate({ id: record.id });
+								}}
+							>
+								<Icon icon={Archive} />
+								Archivar {NOUN[record.kind]}
+							</DropdownMenuItem>
+						) : null}
+					</DropdownMenuGroup>
 				</DropdownMenuContent>
 			</DropdownMenu>
 
-			<AlertDialog open={confirming} onOpenChange={setConfirming}>
+			<AlertDialog
+				open={confirming && access.canPurge}
+				onOpenChange={setConfirming}
+			>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Delete {name} forever?</AlertDialogTitle>
+						<AlertDialogTitle>
+							¿Eliminar {name} definitivamente?
+						</AlertDialogTitle>
 						<AlertDialogDescription>{consequence}</AlertDialogDescription>
 					</AlertDialogHeader>
 
 					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogCancel>Cancelar</AlertDialogCancel>
 						<AlertDialogAction
 							variant="destructive"
-							onClick={() => purge.mutate({ id: record.id })}
+							disabled={pending || !access.canPurge}
+							onClick={() => {
+								if (access.canPurge && !pending)
+									purge.mutate({ id: record.id });
+							}}
 						>
-							Delete forever
+							Eliminar definitivamente
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>

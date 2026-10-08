@@ -1,11 +1,12 @@
 import { DEFAULT_WORKSPACE_NAME } from "@crm/auth";
+import { isAiEnabled } from "@crm/env/features";
 import type { Metadata } from "next";
 import { AuthHeading, AuthShell } from "@/components/auth-shell";
 import { requireMailboxAccess } from "@/lib/session";
 import { OnboardingForm } from "./onboarding-form";
 
 export const metadata: Metadata = {
-	title: "Set up",
+	title: "Configurar empresa",
 };
 
 export const instant = false;
@@ -16,11 +17,14 @@ export default async function OnboardingPage() {
 	return (
 		<AuthShell>
 			<AuthHeading
-				title="Tell us about your company"
-				description="Two things, once. The name is what the CRM calls you; the website is how the agent learns what you sell."
+				title="Configura tu empresa"
+				description="Esta instalación pertenece a una sola empresa. Administra clientes, contactos, oportunidades y actividades de forma manual."
 			/>
 
-			<OnboardingForm placeholder={DEFAULT_WORKSPACE_NAME} />
+			<OnboardingForm
+				placeholder={DEFAULT_WORKSPACE_NAME}
+				aiEnabled={isAiEnabled()}
+			/>
 		</AuthShell>
 	);
 }

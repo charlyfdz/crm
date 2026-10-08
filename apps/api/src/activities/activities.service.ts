@@ -1,11 +1,15 @@
 import { ActivityType, type Db, type Prisma } from "@crm/db";
+import { WORKSPACE_ID } from "@crm/db/workspace";
 import { activityMeta } from "@crm/validation/activity-meta";
 import {
 	BadRequestException,
+	ConflictException,
+	ForbiddenException,
 	Injectable,
 	Logger,
 	NotFoundException,
 } from "@nestjs/common";
+import { z } from "zod";
 import { ActivityStampService } from "../crm/activity-stamp.service";
 import { blankToNull } from "../crm/values";
 import { InjectDatabase } from "../database/database.constants";
@@ -13,10 +17,17 @@ import type {
 	ActivityCreateInput,
 	ActivityEntry,
 	MyTasksInput,
+	TaskUpdateInput,
 	TimelineCounts,
 	TimelineFilter,
 	TimelineInput,
 	TimelineResult,
+} from "./activities.contracts";
+import {
+	activityCreateInput,
+	completeInput,
+	myTasksInput,
+	taskUpdateInput,
 } from "./activities.contracts";
 
 const AUTHOR_SELECT = {
@@ -37,6 +48,8 @@ const ENTRY_SELECT = {
 	meta: true,
 	createdAt: true,
 	createdBy: { select: AUTHOR_SELECT },
+	assignee: { select: AUTHOR_SELECT },
+	priority: true,
 	company: { select: { id: true, name: true } },
 	contact: { select: { id: true, firstName: true, lastName: true } },
 	deal: { select: { id: true, name: true } },
@@ -77,7 +90,11 @@ export class ActivitiesService {
 		private readonly stamp: ActivityStampService,
 	) {}
 
-	async timeline(input: TimelineInput): Promise<TimelineResult> {
+	async timeline(
+		input: TimelineInput,
+		actingUserId: string,
+	): Promise<TimelineResult> {
+		await this.readMember(actingUserId);
 		const where = this.anchor(input);
 		Object.assign(where, filterClause(input.filter));
 
@@ -104,7 +121,9 @@ export class ActivitiesService {
 
 	async timelineCounts(
 		input: Pick<TimelineInput, "companyId" | "contactId" | "dealId">,
+		actingUserId: string,
 	): Promise<TimelineCounts> {
+		await this.readMember(actingUserId);
 		const anchor = this.anchor(input);
 
 		const [all, notes, upcoming, done, email, meetings] = await Promise.all([
@@ -131,29 +150,52 @@ export class ActivitiesService {
 		input: ActivityCreateInput,
 		actingUserId: string,
 	): Promise<ActivityEntry> {
-		const companyId = await this.resolveCompanyId(input);
-
-		const isTask = input.type === ActivityType.TASK;
-
-		const activity = await this.db.activity.create({
-			data: {
-				type: input.type,
-				subject: blankToNull(input.subject ?? ""),
-				body: blankToNull(input.body ?? ""),
-				occurredAt: parseDate(input.occurredAt) ?? new Date(),
-				dueAt: isTask ? parseDate(input.dueAt) : null,
-				companyId,
-				contactId: input.contactId ?? null,
-				dealId: input.dealId ?? null,
-				createdById: actingUserId,
-			},
-			select: ENTRY_SELECT,
+		input = validate(activityCreateInput, input);
+		const activity = await this.mutate(async (tx) => {
+			const role = await this.lockMember(tx, actingUserId);
+			const isTask = input.type === ActivityType.TASK;
+			const assigneeId = isTask ? (input.assigneeId ?? actingUserId) : null;
+			if (assigneeId && assigneeId !== actingUserId) {
+				this.assertAssignmentRole(role);
+				await this.lockMember(tx, assigneeId);
+			}
+			const companyId = await this.resolveRelations(tx, input);
+			return tx.activity.create({
+				data: {
+					type: input.type,
+					subject: blankToNull(input.subject ?? ""),
+					body: blankToNull(input.body ?? ""),
+					occurredAt: parseDate(input.occurredAt) ?? new Date(),
+					dueAt: isTask ? parseDate(input.dueAt) : null,
+					assigneeId,
+					priority: isTask ? (input.priority ?? 0) : 0,
+					companyId,
+					contactId: input.contactId ?? null,
+					dealId: input.dealId ?? null,
+					createdById: actingUserId,
+				},
+				select: ENTRY_SELECT,
+			});
 		});
 
-		await this.stamp.touch(
-			{ companyId, contactId: input.contactId, dealId: input.dealId },
-			activity.createdAt,
-		);
+		try {
+			await this.stamp.touch(
+				{
+					companyId: activity.company?.id,
+					contactId: input.contactId,
+					dealId: input.dealId,
+				},
+				activity.createdAt,
+			);
+		} catch (error) {
+			this.logger.error(
+				{
+					message: "Activity saved but activity stamps need repair",
+					activityId: activity.id,
+				},
+				error instanceof Error ? error.stack : String(error),
+			);
+		}
 
 		this.logger.log({
 			message: "Activity logged",
@@ -164,26 +206,63 @@ export class ActivitiesService {
 		return serializeEntry(activity);
 	}
 
-	async complete(id: string, completed: boolean): Promise<ActivityEntry> {
-		const activity = await this.db.activity.findUnique({
-			where: { id },
-			select: { type: true },
+	async complete(
+		id: string,
+		completed: boolean,
+		actingUserId: string,
+	): Promise<ActivityEntry> {
+		const input = validate(completeInput, { id, completed });
+		const updated = await this.mutate(async (tx) => {
+			const role = await this.lockMember(tx, actingUserId);
+			const activity = await this.lockTask(tx, input.id);
+			this.assertTaskActor(activity, actingUserId, role);
+			await this.resolveRelations(tx, activity);
+			return tx.activity.update({
+				where: { id: input.id },
+				data: {
+					completedAt: input.completed
+						? (activity.completedAt ?? new Date())
+						: null,
+				},
+				select: ENTRY_SELECT,
+			});
 		});
+		return serializeEntry(updated);
+	}
 
-		if (!activity) {
-			throw new NotFoundException(`No activity with id ${id}.`);
-		}
-
-		if (activity.type !== ActivityType.TASK) {
-			throw new BadRequestException("Only tasks can be completed.");
-		}
-
-		const updated = await this.db.activity.update({
-			where: { id },
-			data: { completedAt: completed ? new Date() : null },
-			select: ENTRY_SELECT,
+	async updateTask(
+		input: TaskUpdateInput,
+		actingUserId: string,
+	): Promise<ActivityEntry> {
+		input = validate(taskUpdateInput, input);
+		const updated = await this.mutate(async (tx) => {
+			const role = await this.lockMember(tx, actingUserId);
+			const activity = await this.lockTask(tx, input.id);
+			this.assertTaskActor(activity, actingUserId, role);
+			if (input.assigneeId !== undefined) {
+				if (input.assigneeId !== activity.assigneeId)
+					this.assertAssignmentRole(role);
+				await this.lockMember(tx, input.assigneeId);
+			}
+			await this.resolveRelations(tx, activity);
+			return tx.activity.update({
+				where: { id: input.id },
+				data: {
+					...(input.subject !== undefined ? { subject: input.subject } : {}),
+					...(input.body !== undefined
+						? { body: blankToNull(input.body ?? "") }
+						: {}),
+					...(input.dueAt !== undefined
+						? { dueAt: parseDate(input.dueAt) }
+						: {}),
+					...(input.assigneeId !== undefined
+						? { assigneeId: input.assigneeId }
+						: {}),
+					...(input.priority !== undefined ? { priority: input.priority } : {}),
+				},
+				select: ENTRY_SELECT,
+			});
 		});
-
 		return serializeEntry(updated);
 	}
 
@@ -191,11 +270,18 @@ export class ActivitiesService {
 		input: MyTasksInput,
 		actingUserId: string,
 	): Promise<ActivityEntry[]> {
+		input = validate(myTasksInput, input);
+		await this.readMember(actingUserId);
 		const now = new Date();
 		const where: Prisma.ActivityWhereInput = {
 			type: ActivityType.TASK,
-			completedAt: null,
-			createdById: actingUserId,
+			completedAt: input.window === "completed" ? { not: null } : null,
+			assigneeId: actingUserId,
+			AND: [
+				{ OR: [{ companyId: null }, { company: { archivedAt: null } }] },
+				{ OR: [{ contactId: null }, { contact: { archivedAt: null } }] },
+				{ OR: [{ dealId: null }, { deal: { archivedAt: null } }] },
+			],
 		};
 
 		if (input.window === "overdue") where.dueAt = { lt: now };
@@ -205,8 +291,10 @@ export class ActivitiesService {
 			where,
 			take: input.limit,
 			orderBy: [
+				{ priority: "desc" },
 				{ dueAt: { sort: "asc", nulls: "last" } },
 				{ createdAt: "desc" },
+				{ id: "desc" },
 			],
 			select: ENTRY_SELECT,
 		});
@@ -225,35 +313,170 @@ export class ActivitiesService {
 		);
 	}
 
-	private async resolveCompanyId(
-		input: ActivityCreateInput,
+	private async resolveRelations(
+		tx: Prisma.TransactionClient,
+		input: {
+			companyId?: string | null;
+			contactId?: string | null;
+			dealId?: string | null;
+		},
 	): Promise<string | null> {
-		if (input.companyId) return input.companyId;
-
+		let companyId = input.companyId ?? null;
+		let contactCompanyId: string | null | undefined;
 		if (input.dealId) {
-			const deal = await this.db.deal.findUnique({
+			await tx.$queryRaw`SELECT id FROM "deal" WHERE id = ${input.dealId} FOR SHARE`;
+			const deal = await tx.deal.findUnique({
 				where: { id: input.dealId },
-				select: { companyId: true },
+				select: { companyId: true, archivedAt: true },
 			});
 			if (!deal) {
 				throw new NotFoundException(`No deal with id ${input.dealId}.`);
 			}
-			return deal.companyId;
+			if (deal.archivedAt)
+				throw new BadRequestException(
+					"Restore the opportunity before changing its activities.",
+				);
+			if (companyId && companyId !== deal.companyId)
+				throw new BadRequestException(
+					"The opportunity belongs to another company.",
+				);
+			companyId = deal.companyId;
 		}
 
 		if (input.contactId) {
-			const contact = await this.db.contact.findUnique({
+			await tx.$queryRaw`SELECT id FROM "contact" WHERE id = ${input.contactId} FOR SHARE`;
+			const contact = await tx.contact.findUnique({
 				where: { id: input.contactId },
-				select: { companyId: true },
+				select: { companyId: true, archivedAt: true },
 			});
 			if (!contact) {
 				throw new NotFoundException(`No contact with id ${input.contactId}.`);
 			}
-			return contact.companyId;
+			if (contact.archivedAt)
+				throw new BadRequestException(
+					"Restore the contact before changing its activities.",
+				);
+			contactCompanyId = contact.companyId;
+			if (companyId && companyId !== contactCompanyId)
+				throw new BadRequestException(
+					"The contact belongs to another company.",
+				);
+			companyId ??= contactCompanyId;
 		}
-
-		return null;
+		if (companyId) {
+			await tx.$queryRaw`SELECT id FROM "company" WHERE id = ${companyId} FOR SHARE`;
+			const company = await tx.company.findUnique({
+				where: { id: companyId },
+				select: { id: true, archivedAt: true },
+			});
+			if (!company)
+				throw new NotFoundException(`No company with id ${companyId}.`);
+			if (company.archivedAt)
+				throw new BadRequestException(
+					"Restore the company before changing its activities.",
+				);
+		}
+		return companyId;
 	}
+
+	private async readMember(userId: string) {
+		const member = await this.db.member.findFirst({
+			where: { organizationId: WORKSPACE_ID, userId, suspendedAt: null },
+			select: { role: true },
+		});
+		return memberRole(member?.role);
+	}
+
+	private async lockMember(tx: Prisma.TransactionClient, userId: string) {
+		if (!userId)
+			throw new ForbiddenException(
+				"An active workspace membership is required.",
+			);
+		const members = await tx.$queryRaw<{ role: string }[]>`
+			SELECT role FROM "member" WHERE "organizationId" = ${WORKSPACE_ID} AND "userId" = ${userId} AND "suspendedAt" IS NULL FOR SHARE
+		`;
+		return memberRole(members[0]?.role);
+	}
+
+	private async lockTask(tx: Prisma.TransactionClient, id: string) {
+		await tx.$queryRaw`SELECT id FROM "activity" WHERE id = ${id} FOR UPDATE`;
+		const activity = await tx.activity.findUnique({
+			where: { id },
+			select: {
+				type: true,
+				createdById: true,
+				assigneeId: true,
+				completedAt: true,
+				companyId: true,
+				contactId: true,
+				dealId: true,
+			},
+		});
+		if (!activity) throw new NotFoundException(`No activity with id ${id}.`);
+		if (activity.type !== ActivityType.TASK)
+			throw new BadRequestException("Only tasks support this action.");
+		return activity;
+	}
+
+	private assertTaskActor(
+		activity: { createdById: string; assigneeId: string | null },
+		userId: string,
+		role: string,
+	) {
+		if (
+			role === "owner" ||
+			role === "admin" ||
+			activity.createdById === userId ||
+			activity.assigneeId === userId
+		)
+			return;
+		throw new ForbiddenException(
+			"Only the task author, assignee, owner or admin can change this task.",
+		);
+	}
+
+	private assertAssignmentRole(role: string) {
+		if (role === "owner" || role === "admin") return;
+		throw new ForbiddenException(
+			"Only an owner or admin can assign work to another person.",
+		);
+	}
+
+	private async mutate<T>(
+		work: (tx: Prisma.TransactionClient) => Promise<T>,
+	): Promise<T> {
+		try {
+			return await this.db.$transaction(work, {
+				isolationLevel: "Serializable",
+			});
+		} catch (error) {
+			if (error instanceof Error && "code" in error && error.code === "P2034") {
+				throw new ConflictException(
+					"The task or membership changed. Reload and retry.",
+				);
+			}
+			throw error;
+		}
+	}
+}
+
+function memberRole(role: string | undefined) {
+	if (role === "owner" || role === "admin" || role === "member") return role;
+	throw new ForbiddenException(
+		"An active workspace membership with a supported role is required.",
+	);
+}
+
+function validate<S extends z.ZodType>(
+	schema: S,
+	input: z.input<S>,
+): z.output<S> {
+	const result = schema.safeParse(input);
+	if (!result.success)
+		throw new BadRequestException(
+			result.error.issues.map((issue) => issue.message).join(" "),
+		);
+	return result.data;
 }
 
 function filterClause(filter: TimelineFilter): Prisma.ActivityWhereInput {

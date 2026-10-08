@@ -19,6 +19,7 @@ import {
 	type AgentUpdateInput,
 	agentManifest,
 } from "./agents.contracts";
+import { requireApiAiEnabled } from "./ai-policy";
 
 const INSTRUCTIONS_PATH = "agent/instructions.md";
 
@@ -505,6 +506,7 @@ export class AgentDefinitionsService {
 	}
 
 	async deploy(input: AgentDeployInput, userId: string) {
+		requireApiAiEnabled();
 		return this.db.$transaction(async (tx) => {
 			await this.access.assertCanManageInTransaction(tx, input.id, userId);
 			const agent = await this.lockAgent(tx, input.id);
@@ -614,6 +616,7 @@ export class AgentDefinitionsService {
 	}
 
 	async resume(id: string, userId: string) {
+		requireApiAiEnabled();
 		return this.changeStatus(
 			id,
 			userId,

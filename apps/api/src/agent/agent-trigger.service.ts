@@ -3,10 +3,12 @@ import { PRIORITY } from "@crm/db/agent-tasks";
 import { CRM_EVENT_CATALOG, type CrmEventType } from "@crm/db/crm-events";
 import { RECORD_ID_COLUMNS } from "@crm/db/fields";
 import { lockIdempotencyKey } from "@crm/db/idempotency";
+import { isAiEnabled } from "@crm/env/features";
 import { fieldBackfillPayload } from "@crm/validation/field-backfill";
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectDatabase } from "../database/database.constants";
 import { AGENT_DISPATCH } from "./agent-dispatch.config";
+import { requireApiAiEnabled } from "./ai-policy";
 import { bridge } from "./bridge";
 
 export type CrmEventInput = {
@@ -53,25 +55,39 @@ export class AgentTriggerService {
 	async companyCreated(
 		companyId: string,
 		reason = "New company",
+		client?: Prisma.TransactionClient,
 	): Promise<void> {
-		await this.enqueue({
-			companyId,
-			kind: "brand",
-			reason,
-			priority: PRIORITY.brand,
-			budget: 2,
-		});
+		await this.enqueue(
+			{
+				companyId,
+				kind: "brand",
+				reason,
+				priority: PRIORITY.brand,
+				budget: 2,
+			},
+			false,
+			client,
+		);
 
-		await this.enqueue({
-			companyId,
-			kind: "company-profile",
-			reason,
-			priority: PRIORITY.companyProfile,
-			budget: 4,
-		});
+		await this.enqueue(
+			{
+				companyId,
+				kind: "company-profile",
+				reason,
+				priority: PRIORITY.companyProfile,
+				budget: 4,
+			},
+			false,
+			client,
+		);
 	}
 
-	async companyRequested(companyId: string, reason: string): Promise<boolean> {
+	async companyRequested(
+		companyId: string,
+		reason: string,
+		client?: Prisma.TransactionClient,
+	): Promise<boolean> {
+		requireApiAiEnabled();
 		const brand = await this.enqueue(
 			{
 				companyId,
@@ -81,6 +97,7 @@ export class AgentTriggerService {
 				budget: 2,
 			},
 			true,
+			client,
 		);
 
 		const profile = await this.enqueue(
@@ -92,6 +109,7 @@ export class AgentTriggerService {
 				budget: 8,
 			},
 			true,
+			client,
 		);
 
 		return brand || profile;
@@ -110,6 +128,7 @@ export class AgentTriggerService {
 		contactId: string,
 		reason: string,
 		required = false,
+		client?: Prisma.TransactionClient,
 	): Promise<boolean> {
 		return this.enqueue(
 			{
@@ -120,6 +139,7 @@ export class AgentTriggerService {
 				budget: 4,
 			},
 			required,
+			client,
 		);
 	}
 
@@ -153,6 +173,7 @@ export class AgentTriggerService {
 		const result = await this.db.$transaction((tx) =>
 			work(tx, {
 				slackChannelJoinRequested: async (channelId, channelName) => {
+					if (!isAiEnabled()) return;
 					const created = await this.queueSlackChannelJoin(
 						channelId,
 						channelName,
@@ -200,6 +221,7 @@ export class AgentTriggerService {
 		const queued: CrmEventInput[] = [];
 		const result = await this.db.$transaction((tx) =>
 			work(tx, async (input) => {
+				if (!isAiEnabled()) return;
 				await this.createEventTask(tx, input);
 				queued.push(input);
 			}),
@@ -223,7 +245,9 @@ export class AgentTriggerService {
 		keys: string[],
 		ids: string[],
 		reason: string,
+		transaction?: Prisma.TransactionClient,
 	): Promise<{ queued: number; merged: number }> {
+		if (!isAiEnabled()) return { queued: 0, merged: 0 };
 		if (ids.length === 0 || keys.length === 0) {
 			return { queued: 0, merged: 0 };
 		}
@@ -234,7 +258,7 @@ export class AgentTriggerService {
 
 		const queueOne = async (id: string): Promise<void> => {
 			try {
-				const outcome = await this.db.$transaction(async (tx) => {
+				const write = async (tx: Prisma.TransactionClient) => {
 					await lockIdempotencyKey(
 						tx,
 						`agent-task:field-backfill:${entity}:${id}`,
@@ -279,11 +303,13 @@ export class AgentTriggerService {
 						},
 					});
 					return "merged" as const;
-				});
+				};
+				const outcome = transaction ? await write(transaction) : await this.db.$transaction(write);
 
 				if (outcome === "queued") queued += 1;
 				if (outcome === "merged") merged += 1;
 			} catch (error) {
+				if (transaction) throw error;
 				this.logger.error(
 					{
 						message: "Could not queue agent task",
@@ -297,11 +323,9 @@ export class AgentTriggerService {
 			}
 		};
 
-		await runWithConcurrency(
-			ids,
-			AGENT_DISPATCH.fieldBackfill.concurrency,
-			queueOne,
-		);
+		if (transaction) {
+			for (const id of ids) await queueOne(id);
+		} else await runWithConcurrency(ids, AGENT_DISPATCH.fieldBackfill.concurrency, queueOne);
 
 		this.logger.log({
 			message: "Agent task queued",
@@ -312,7 +336,7 @@ export class AgentTriggerService {
 			merged,
 		});
 
-		if (queued > 0 || merged > 0) this.poke();
+		if (!transaction && (queued > 0 || merged > 0)) this.poke();
 
 		return { queued, merged };
 	}
@@ -340,6 +364,7 @@ export class AgentTriggerService {
 	}
 
 	async redeliverCancellations(): Promise<void> {
+		if (!isAiEnabled()) return;
 		try {
 			const since = new Date(
 				Date.now() - AGENT_DISPATCH.cancel.redeliverWithinMs,
@@ -386,6 +411,7 @@ export class AgentTriggerService {
 		budget?: number;
 		priority?: number;
 	}): Promise<{ queued: number; alreadyQueued: number }> {
+		if (!isAiEnabled()) return { queued: 0, alreadyQueued: 0 };
 		const subject = input.contactIds ? "contactId" : "companyId";
 		const ids = [...new Set(input.contactIds ?? input.companyIds ?? [])];
 		if (ids.length === 0) return { queued: 0, alreadyQueued: 0 };
@@ -457,6 +483,8 @@ export class AgentTriggerService {
 		required = false,
 		client?: Prisma.TransactionClient,
 	): Promise<boolean> {
+		if (required) requireApiAiEnabled();
+		if (!isAiEnabled()) return false;
 		try {
 			const write = async (tx: Prisma.TransactionClient) => {
 				await lockIdempotencyKey(
@@ -521,6 +549,7 @@ export class AgentTriggerService {
 		tx: Prisma.TransactionClient,
 		input: CrmEventInput,
 	): Promise<void> {
+		if (!isAiEnabled()) return;
 		const recordIds = {
 			contactId: input.record.kind === "contact" ? input.record.id : null,
 			companyId: input.record.kind === "company" ? input.record.id : null,
@@ -545,10 +574,11 @@ export class AgentTriggerService {
 	}
 
 	canReachAgent(): boolean {
-		return bridge() !== null;
+		return isAiEnabled() && bridge() !== null;
 	}
 
 	drainQueues(): void {
+		if (!isAiEnabled()) return;
 		this.poke();
 		this.deployedAgentRunQueued();
 		this.builderConversationQueued();
@@ -560,6 +590,7 @@ export class AgentTriggerService {
 	}
 
 	private pokeRoute(path: string): void {
+		if (!isAiEnabled()) return;
 		void this.post(path);
 	}
 
@@ -567,6 +598,7 @@ export class AgentTriggerService {
 		path: string,
 		body?: Record<string, string>,
 	): Promise<boolean> {
+		if (!isAiEnabled()) return false;
 		const agent = bridge();
 		if (!agent) return false;
 

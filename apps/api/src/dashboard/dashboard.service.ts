@@ -1,11 +1,14 @@
-import { ActivityType, type Db, DealStage } from "@crm/db";
+import { ActivityType, type Db, DealStage, type Prisma } from "@crm/db";
+import { normalizeCurrency } from "@crm/db/currency";
 import { OPEN_DEAL_STAGES } from "@crm/db/deal-stage";
 import { activityMeta } from "@crm/validation/activity-meta";
 import { Injectable } from "@nestjs/common";
 import { toCents } from "../crm/values";
 import { ConversionService } from "../currency/conversion.service";
 import { InjectDatabase } from "../database/database.constants";
+import { archivedFilter } from "../trpc/list-input";
 import type { DashboardSummaryInput } from "./dashboard.contracts";
+import { DASHBOARD } from "./dashboard-config";
 
 const OWNER_SELECT = {
 	id: true,
@@ -13,12 +16,6 @@ const OWNER_SELECT = {
 	email: true,
 	image: true,
 } as const;
-
-const TREND_MONTHS = 6;
-
-const RATE_WINDOW_DAYS = 90;
-
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 const MONTH_LABEL = new Intl.DateTimeFormat("en-US", { month: "short" });
 
@@ -40,45 +37,86 @@ export class DashboardService {
 	async summary(actingUserId: string, input: DashboardSummaryInput) {
 		const mine = input.scope === "me";
 		const owned = mine ? { ownerId: actingUserId } : {};
+		const active = { ...owned, ...archivedFilter(false) };
+		const open = { ...active, stage: { in: [...OPEN_DEAL_STAGES] } };
+		const activeActivity: Prisma.ActivityWhereInput = {
+			OR: [{ dealId: null }, { deal: { is: archivedFilter(false) } }],
+		};
 
 		const now = new Date();
 		const startOfMonth = monthStart(now, 0);
 		const startOfNextMonth = monthStart(now, 1);
 		const startOfPrevMonth = monthStart(now, -1);
-		const trendStart = monthStart(now, -(TREND_MONTHS - 1));
-		const rateStart = new Date(now.getTime() - RATE_WINDOW_DAYS * DAY_MS);
+		const trendStart = monthStart(now, -(DASHBOARD.trendMonths - 1));
+		const rateStart = new Date(
+			now.getTime() - DASHBOARD.rateWindowDays * DASHBOARD.dayMs,
+		);
+		const closingThisMonth = {
+			...open,
+			expectedCloseDate: { gte: startOfMonth, lt: startOfNextMonth },
+		};
 
 		const base = await this.conversion.reportingCurrency();
 		const counted = this.conversion.countedWhere(base);
+		const unvalued: Prisma.DealWhereInput = {
+			OR: [
+				{ baseAmount: null },
+				{ baseCurrency: null },
+				{ baseCurrency: { not: base } },
+			],
+		};
+		const biggestSelect = {
+			id: true,
+			name: true,
+			stage: true,
+			amount: true,
+			currency: true,
+			baseAmount: true,
+			baseCurrency: true,
+			expectedCloseDate: true,
+			stageChangedAt: true,
+			company: {
+				select: {
+					id: true,
+					name: true,
+					iconUrl: true,
+					iconDarkUrl: true,
+					iconTone: true,
+				},
+			},
+			owner: { select: OWNER_SELECT },
+		} as const;
 
 		const [
 			openByStage,
 			openValueByStage,
 			recentDeals,
 			closingThisMonthTotals,
+			closingThisMonthCount,
 			biggestOpen,
+			unvaluedOpen,
 			overdueTasks,
 			recentActivity,
-			unconverted,
+			pendingByCurrency,
 		] = await Promise.all([
 			this.db.deal.groupBy({
 				by: ["stage"],
-				where: { ...owned, stage: { in: [...OPEN_DEAL_STAGES] } },
+				where: open,
 				_count: { _all: true },
 			}),
 			this.db.deal.groupBy({
 				by: ["stage"],
 				where: {
-					AND: [{ ...owned, stage: { in: [...OPEN_DEAL_STAGES] } }, counted],
+					AND: [open, counted],
 				},
 				_sum: { baseAmount: true },
 			}),
 			this.db.deal.findMany({
 				where: {
-					...owned,
+					...active,
 					OR: [
-						{ createdAt: { gte: trendStart } },
-						{ closedAt: { gte: trendStart } },
+						{ createdAt: { gte: trendStart, lte: now } },
+						{ closedAt: { gte: trendStart, lte: now } },
 					],
 				},
 				select: {
@@ -91,56 +129,44 @@ export class DashboardService {
 			}),
 			this.db.deal.aggregate({
 				where: {
-					AND: [
-						{
-							...owned,
-							stage: { in: [...OPEN_DEAL_STAGES] },
-							expectedCloseDate: { gte: startOfMonth, lt: startOfNextMonth },
-						},
-						counted,
-					],
+					AND: [closingThisMonth, counted],
 				},
-				_count: { _all: true },
 				_sum: { baseAmount: true },
 			}),
+			this.db.deal.count({ where: closingThisMonth }),
 			this.db.deal.findMany({
-				where: { ...owned, stage: { in: [...OPEN_DEAL_STAGES] } },
+				where: { AND: [open, counted] },
 				orderBy: [
 					{ baseAmount: { sort: "desc", nulls: "last" } },
-					{ expectedCloseDate: "asc" },
+					{ expectedCloseDate: { sort: "asc", nulls: "last" } },
+					{ id: "asc" },
 				],
-				take: 6,
-				select: {
-					id: true,
-					name: true,
-					stage: true,
-					amount: true,
-					currency: true,
-					baseAmount: true,
-					baseCurrency: true,
-					expectedCloseDate: true,
-					stageChangedAt: true,
-					company: {
-						select: {
-							id: true,
-							name: true,
-							iconUrl: true,
-							iconDarkUrl: true,
-							iconTone: true,
-						},
-					},
-					owner: { select: OWNER_SELECT },
-				},
+				take: DASHBOARD.largestDeals,
+				select: biggestSelect,
+			}),
+			this.db.deal.findMany({
+				where: { AND: [open, unvalued] },
+				orderBy: [
+					{ expectedCloseDate: { sort: "asc", nulls: "last" } },
+					{ id: "asc" },
+				],
+				take: DASHBOARD.largestDeals,
+				select: biggestSelect,
 			}),
 			this.db.activity.findMany({
 				where: {
-					type: ActivityType.TASK,
-					completedAt: null,
-					dueAt: { lt: now },
-					createdById: actingUserId,
+					AND: [
+						activeActivity,
+						{
+							type: ActivityType.TASK,
+							completedAt: null,
+							dueAt: { lt: now },
+							...(mine ? { assigneeId: actingUserId } : {}),
+						},
+					],
 				},
 				orderBy: [{ dueAt: "asc" }],
-				take: 10,
+				take: DASHBOARD.overdueTasks,
 				select: {
 					id: true,
 					subject: true,
@@ -150,9 +176,11 @@ export class DashboardService {
 				},
 			}),
 			this.db.activity.findMany({
-				where: mine ? { createdById: actingUserId } : {},
+				where: {
+					AND: [activeActivity, mine ? { createdById: actingUserId } : {}],
+				},
 				orderBy: [{ createdAt: "desc" }],
-				take: 12,
+				take: DASHBOARD.recentActivities,
 				select: {
 					id: true,
 					type: true,
@@ -165,7 +193,11 @@ export class DashboardService {
 					deal: { select: { id: true, name: true } },
 				},
 			}),
-			this.conversion.unconverted(owned),
+			this.db.deal.groupBy({
+				by: ["currency"],
+				where: { AND: [active, this.conversion.pendingWhere(base)] },
+				_count: { _all: true },
+			}),
 		]);
 
 		const stages = OPEN_DEAL_STAGES.map((stage) => {
@@ -179,7 +211,7 @@ export class DashboardService {
 		});
 
 		const firstBucket = monthKey(trendStart);
-		const trend = Array.from({ length: TREND_MONTHS }, (_, index) => ({
+		const trend = Array.from({ length: DASHBOARD.trendMonths }, (_, index) => ({
 			month: MONTH_LABEL.format(monthStart(trendStart, index)),
 			won: 0,
 			created: 0,
@@ -199,10 +231,10 @@ export class DashboardService {
 			const cents = valued ?? 0;
 
 			const created = trend[monthKey(deal.createdAt) - firstBucket];
-			if (created) created.created += cents;
+			if (created && deal.createdAt <= now) created.created += cents;
 
 			const { closedAt, stage } = deal;
-			if (!closedAt) continue;
+			if (!closedAt || closedAt > now) continue;
 			const won = stage === DealStage.CLOSED_WON;
 
 			if (won) {
@@ -225,7 +257,8 @@ export class DashboardService {
 					valuedWins += 1;
 					wonCents += cents;
 				}
-				cycleDays += (closedAt.getTime() - deal.createdAt.getTime()) / DAY_MS;
+				cycleDays +=
+					(closedAt.getTime() - deal.createdAt.getTime()) / DASHBOARD.dayMs;
 			} else if (stage === DealStage.CLOSED_LOST) {
 				losses += 1;
 			}
@@ -236,7 +269,17 @@ export class DashboardService {
 		return {
 			scope: input.scope,
 			reportingCurrency: base,
-			unconverted,
+			unconverted: {
+				count: pendingByCurrency.reduce(
+					(total, row) => total + row._count._all,
+					0,
+				),
+				currencies: [
+					...new Set(
+						pendingByCurrency.map((row) => normalizeCurrency(row.currency)),
+					),
+				].sort(),
+			},
 			pipeline: {
 				stages,
 				totalCents: stages.reduce((total, s) => total + s.valueCents, 0),
@@ -245,7 +288,7 @@ export class DashboardService {
 			wonThisMonth,
 			wonPrevMonth,
 			performance: {
-				windowDays: RATE_WINDOW_DAYS,
+				windowDays: DASHBOARD.rateWindowDays,
 				wins,
 				losses,
 				winRate: decided === 0 ? null : wins / decided,
@@ -255,10 +298,11 @@ export class DashboardService {
 			},
 			trend,
 			closingThisMonthTotal: {
-				count: closingThisMonthTotals._count._all,
+				count: closingThisMonthCount,
 				valueCents: toCents(closingThisMonthTotals._sum.baseAmount) ?? 0,
 			},
-			biggestOpen: biggestOpen
+			biggestOpen: [...biggestOpen, ...unvaluedOpen]
+				.slice(0, DASHBOARD.largestDeals)
 				.map(
 					({
 						amount,
@@ -274,8 +318,7 @@ export class DashboardService {
 						expectedCloseDate: expectedCloseDate?.toISOString() ?? null,
 						stageChangedAt: stageChangedAt.toISOString(),
 					}),
-				)
-				.sort((a, b) => (b.baseAmountCents ?? -1) - (a.baseAmountCents ?? -1)),
+				),
 			overdueTasks: overdueTasks.map(({ dueAt, ...task }) => ({
 				...task,
 				dueAt: dueAt?.toISOString() ?? null,

@@ -8,6 +8,7 @@ import {
 	UseMiddlewares,
 } from "nestjs-trpc";
 import type { z } from "zod";
+import { dealStageHistoryOutput } from "../pipelines/pipelines.contracts";
 import type { AuthedTrpcContext } from "../trpc/context.types";
 import { AuthMiddleware } from "../trpc/middlewares/auth.middleware";
 import { restMeta } from "../trpc/openapi";
@@ -46,8 +47,11 @@ export class DealsRouter {
 		output: dealListOutput,
 		meta: restMeta("POST", "/deals/search", ["Deals"]),
 	})
-	async list(@Input() input: z.infer<typeof dealListInput>) {
-		return this.deals.list(input);
+	async list(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input() input: z.infer<typeof dealListInput>,
+	) {
+		return this.deals.list(input, ctx.user.id);
 	}
 
 	@Query({
@@ -55,8 +59,8 @@ export class DealsRouter {
 		output: dealDetailOutput,
 		meta: restMeta("GET", "/deals/{id}", ["Deals"]),
 	})
-	async byId(@Input("id") id: string) {
-		return this.deals.byId(id);
+	async byId(@Ctx() ctx: AuthedTrpcContext, @Input("id") id: string) {
+		return this.deals.byId(id, ctx.user.id);
 	}
 
 	@Mutation({
@@ -64,8 +68,20 @@ export class DealsRouter {
 		output: dealCreateOutput,
 		meta: restMeta("POST", "/deals", ["Deals"]),
 	})
-	async create(@Input() input: z.infer<typeof dealCreateInput>) {
-		return this.deals.create(input);
+	async create(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input() input: z.infer<typeof dealCreateInput>,
+	) {
+		return this.deals.create(input, ctx.user.id);
+	}
+
+	@Query({
+		input: dealIdInput,
+		output: dealStageHistoryOutput,
+		meta: restMeta("GET", "/deals/{id}/stage-history", ["Deals"]),
+	})
+	async stageHistory(@Ctx() ctx: AuthedTrpcContext, @Input("id") id: string) {
+		return this.deals.stageHistory(id, ctx.user.id);
 	}
 
 	@Mutation({
@@ -73,8 +89,11 @@ export class DealsRouter {
 		output: dealMutateOutput,
 		meta: restMeta("PATCH", "/deals/{id}", ["Deals"]),
 	})
-	async update(@Input() input: z.infer<typeof dealUpdateArgs>) {
-		return this.deals.update(input.id, input.data);
+	async update(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input() input: z.infer<typeof dealUpdateArgs>,
+	) {
+		return this.deals.update(input.id, input.data, ctx.user.id);
 	}
 
 	@Mutation({
@@ -82,8 +101,8 @@ export class DealsRouter {
 		output: dealMutateOutput,
 		meta: restMeta("POST", "/deals/{id}/archive", ["Deals"]),
 	})
-	async archive(@Input("id") id: string) {
-		return this.deals.archive(id);
+	async archive(@Ctx() ctx: AuthedTrpcContext, @Input("id") id: string) {
+		return this.deals.archive(id, ctx.user.id);
 	}
 
 	@Mutation({
@@ -91,8 +110,8 @@ export class DealsRouter {
 		output: dealMutateOutput,
 		meta: restMeta("POST", "/deals/{id}/restore", ["Deals"]),
 	})
-	async restore(@Input("id") id: string) {
-		return this.deals.restore(id);
+	async restore(@Ctx() ctx: AuthedTrpcContext, @Input("id") id: string) {
+		return this.deals.restore(id, ctx.user.id);
 	}
 
 	@Mutation({
@@ -100,8 +119,8 @@ export class DealsRouter {
 		output: dealMutateOutput,
 		meta: restMeta("DELETE", "/deals/{id}", ["Deals"]),
 	})
-	async purge(@Input("id") id: string) {
-		return this.deals.purge(id);
+	async purge(@Ctx() ctx: AuthedTrpcContext, @Input("id") id: string) {
+		return this.deals.purge(id, ctx.user.id);
 	}
 
 	@Mutation({
@@ -121,8 +140,11 @@ export class DealsRouter {
 		output: dealContactOptionsOutput,
 		meta: restMeta("GET", "/deals/{dealId}/contact-options", ["Deals"]),
 	})
-	async contactOptions(@Input("dealId") dealId: string) {
-		return this.deals.contactOptions(dealId);
+	async contactOptions(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input("dealId") dealId: string,
+	) {
+		return this.deals.contactOptions(dealId, ctx.user.id);
 	}
 
 	@Mutation({
@@ -130,8 +152,11 @@ export class DealsRouter {
 		output: dealContactLinkOutput,
 		meta: restMeta("POST", "/deals/{dealId}/contacts", ["Deals"]),
 	})
-	async attachContact(@Input() input: z.infer<typeof dealAttachContactInput>) {
-		return this.deals.attachContact(input);
+	async attachContact(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input() input: z.infer<typeof dealAttachContactInput>,
+	) {
+		return this.deals.attachContact(input, ctx.user.id);
 	}
 
 	@Mutation({
@@ -139,8 +164,11 @@ export class DealsRouter {
 		output: dealContactLinkOutput,
 		meta: restMeta("DELETE", "/deals/{dealId}/contacts/{contactId}", ["Deals"]),
 	})
-	async detachContact(@Input() input: z.infer<typeof dealDetachContactInput>) {
-		return this.deals.detachContact(input);
+	async detachContact(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input() input: z.infer<typeof dealDetachContactInput>,
+	) {
+		return this.deals.detachContact(input, ctx.user.id);
 	}
 
 	@Mutation({
@@ -150,8 +178,11 @@ export class DealsRouter {
 			"Deals",
 		]),
 	})
-	async setContactRole(@Input() input: z.infer<typeof dealContactRoleInput>) {
-		return this.deals.setContactRole(input);
+	async setContactRole(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input() input: z.infer<typeof dealContactRoleInput>,
+	) {
+		return this.deals.setContactRole(input, ctx.user.id);
 	}
 
 	@Mutation({
@@ -159,8 +190,11 @@ export class DealsRouter {
 		output: dealBulkResultOutput,
 		meta: restMeta("POST", "/deals/bulk-assign-owner", ["Deals"]),
 	})
-	async bulkAssignOwner(@Input() input: z.infer<typeof dealBulkOwnerInput>) {
-		return this.deals.bulkAssignOwner(input);
+	async bulkAssignOwner(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input() input: z.infer<typeof dealBulkOwnerInput>,
+	) {
+		return this.deals.bulkAssignOwner(input, ctx.user.id);
 	}
 
 	@Mutation({
@@ -180,8 +214,11 @@ export class DealsRouter {
 		output: dealBulkResultOutput,
 		meta: restMeta("POST", "/deals/bulk-archive", ["Deals"]),
 	})
-	async bulkArchive(@Input("ids") ids: string[]) {
-		return this.deals.bulkArchive(ids);
+	async bulkArchive(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input("ids") ids: string[],
+	) {
+		return this.deals.bulkArchive(ids, ctx.user.id);
 	}
 
 	@Mutation({
@@ -189,8 +226,11 @@ export class DealsRouter {
 		output: dealBulkResultOutput,
 		meta: restMeta("POST", "/deals/bulk-restore", ["Deals"]),
 	})
-	async bulkRestore(@Input("ids") ids: string[]) {
-		return this.deals.bulkRestore(ids);
+	async bulkRestore(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input("ids") ids: string[],
+	) {
+		return this.deals.bulkRestore(ids, ctx.user.id);
 	}
 
 	@Mutation({
@@ -198,7 +238,7 @@ export class DealsRouter {
 		output: dealBulkResultOutput,
 		meta: restMeta("POST", "/deals/bulk-purge", ["Deals"]),
 	})
-	async bulkPurge(@Input("ids") ids: string[]) {
-		return this.deals.bulkPurge(ids);
+	async bulkPurge(@Ctx() ctx: AuthedTrpcContext, @Input("ids") ids: string[]) {
+		return this.deals.bulkPurge(ids, ctx.user.id);
 	}
 }

@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { WORKSPACE_ID } from "@crm/auth";
 import type { Db, Prisma } from "@crm/db";
+import { aiFeaturePolicy } from "@crm/env/features";
 import {
 	ForbiddenException,
 	Injectable,
@@ -155,6 +156,7 @@ export class ConversationSharingService {
 		});
 
 		return {
+			ai: aiFeaturePolicy(),
 			id: conversation.id,
 			title: conversation.title,
 			ownerName: conversation.user.name,

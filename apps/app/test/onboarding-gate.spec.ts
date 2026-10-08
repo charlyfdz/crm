@@ -52,7 +52,6 @@ const researchKey = (configured: boolean) => ({
 	result: { data: { configured, hint: configured ? "••••9876" : null } },
 });
 
-/** Answers both gate procedures, counting the calls to each. */
 function setup({
 	onboarded = true,
 	canRename = true,
@@ -237,11 +236,11 @@ describe("proxy", () => {
 		const first = await proxy(request(`/${SLUG}/companies`, [SESSION_COOKIE]));
 
 		expect([...first.cookies.getAll()]).toHaveLength(0);
-		expect(calls).toEqual({ workspace: 1, research: 1 });
+		expect(calls).toEqual({ workspace: 1, research: 0 });
 
 		await proxy(request(`/${SLUG}/companies`, [SESSION_COOKIE]));
 
-		expect(calls).toEqual({ workspace: 2, research: 2 });
+		expect(calls).toEqual({ workspace: 2, research: 0 });
 	});
 
 	it("notices when the answer changes underneath it", async () => {
@@ -262,7 +261,7 @@ describe("proxy", () => {
 		).toBe("/onboarding");
 	});
 
-	it("takes a settled rep off both setup pages and into the workspace", async () => {
+	it("takes a settled rep off workspace setup and keeps research optional", async () => {
 		setup();
 
 		expect(
@@ -273,7 +272,7 @@ describe("proxy", () => {
 			redirectedTo(
 				await proxy(request("/onboarding/research", [SESSION_COOKIE])),
 			),
-		).toBe(`/${SLUG}`);
+		).toBeNull();
 	});
 
 	it("never fights /grant-access, which would ping-pong forever", async () => {
@@ -355,18 +354,22 @@ describe("the slug the app is served under", () => {
 	});
 });
 
-describe("the research key gate", () => {
-	it("sends an onboarded rep with no key to the key form", async () => {
-		setup({ configured: false });
+describe("optional research configuration", () => {
+	it("lets an onboarded rep use the CRM without a research key", async () => {
+		const calls = setup({ configured: false });
 
-		expect(
-			redirectedTo(
-				await proxy(request(`/${SLUG}/companies`, [SESSION_COOKIE])),
-			),
-		).toBe("/onboarding/research");
+		for (const section of ["", "/companies", "/contacts", "/deals", "/settings"]) {
+			expect(
+				redirectedTo(
+					await proxy(request(`/${SLUG}${section}`, [SESSION_COOKIE])),
+				),
+			).toBeNull();
+		}
+
+		expect(calls).toEqual({ workspace: 5, research: 0 });
 	});
 
-	it("lets that form render rather than looping onto itself", async () => {
+	it("keeps the optional form accessible without a key", async () => {
 		setup({ configured: false });
 
 		expect(
@@ -376,7 +379,7 @@ describe("the research key gate", () => {
 		).toBeNull();
 	});
 
-	it("asks the first question first when both are outstanding", async () => {
+	it("requires workspace setup even when research is unconfigured", async () => {
 		setup({ onboarded: false, configured: false });
 
 		expect(
@@ -386,11 +389,34 @@ describe("the research key gate", () => {
 		).toBe("/onboarding");
 	});
 
-	it("sends them on to the key once the workspace is named", async () => {
+	it("opens the workspace directly after manual setup", async () => {
 		setup({ onboarded: true, configured: false });
 
 		expect(
 			redirectedTo(await proxy(request("/onboarding", [SESSION_COOKIE]))),
-		).toBe("/onboarding/research");
+		).toBe(`/${SLUG}`);
+	});
+
+	it("preserves legacy links and their query without a research key", async () => {
+		setup({ configured: false });
+
+		const response = await proxy(
+			request("/companies?record=company:synthetic", [SESSION_COOKIE]),
+		);
+
+		expect(response.headers.get("location")).toBe(
+			`http://localhost:3000/${SLUG}/companies?record=company:synthetic`,
+		);
+	});
+
+	it("does not read research configuration to route manual users", async () => {
+		stub(async (url) => {
+			expect(url).toContain("workspace.get");
+			return json(workspace({ onboarded: true, canRename: true }));
+		});
+
+		expect(redirectedTo(await proxy(request("/", [SESSION_COOKIE])))).toBe(
+			`/${SLUG}`,
+		);
 	});
 });

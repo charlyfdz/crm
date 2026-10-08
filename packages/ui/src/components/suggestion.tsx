@@ -13,12 +13,14 @@ export function Suggestion({
 	pending = false,
 	onAccept,
 	onDismiss,
+	readOnly = false,
 }: {
 	value: React.ReactNode;
 	rationale?: React.ReactNode;
 	pending?: boolean;
 	onAccept: () => void;
 	onDismiss: () => void;
+	readOnly?: boolean;
 }) {
 	return (
 		<div
@@ -32,7 +34,7 @@ export function Suggestion({
 				{rationale ? <p className="text-pretty">{rationale}</p> : null}
 			</div>
 
-			<div className="flex shrink-0 items-center gap-1">
+			{readOnly ? null : <div className="flex shrink-0 items-center gap-1">
 				{pending ? (
 					<Spinner className="size-3" />
 				) : (
@@ -55,7 +57,7 @@ export function Suggestion({
 						</Button>
 					</>
 				)}
-			</div>
+			</div>}
 		</div>
 	);
 }

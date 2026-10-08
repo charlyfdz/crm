@@ -6,11 +6,21 @@ reads once.
 
 ## First run
 
+The corporate fork starts the app and API only. AI and telemetry default to disabled.
+Use a dedicated local database. Do not seed production or reuse another project's credentials.
+Provision the first owner with `bun run auth:provision --bootstrap` after applying migrations.
+See `docs/access/local-access.md` for the managed-account workflow.
+Google, Microsoft and Context.dev are optional.
+
+The deployment package lives in `deploy/`. Do not use the inherited root development Compose for production.
+Corporativo S&F is the first pilot. Homelab installation remains prohibited until the complete-version acceptance gate passes.
+
 ```sh
 cp .env.example .env        # fill DATABASE_URL, BETTER_AUTH_SECRET, ALLOWED_SIGN_IN
 docker compose up -d        # Postgres, matching .env.example
-bun run db:migrate && bun run db:seed
-bun run dev                 # app :3000, api :3001, agent :2000
+bun run db:migrate
+bun run auth:provision --bootstrap
+bun run dev                 # app :3000, api :3001; no agent
 ```
 
 Prisma from the repo root: `db:generate`, `db:migrate`, `db:push`, `db:reset`,
@@ -50,6 +60,10 @@ the bridge — send `-H 'Host: agent.example.com'`. `GET /eve/v1/info` is the wh
 inventory, including a `diagnostics` count that finds files eve silently ignored.
 
 ## Running the agent
+
+Only run the optional agent after an explicit `CRM_AI_ENABLED=true` decision.
+`bun run dev:ai` starts all three processes. Provider keys do not enable this policy implicitly.
+The default `bun run dev` never starts the agent.
 
 The agent package's default `dev` command is interactive `eve dev`. The root
 Turbo task marks it interactive, so select the agent pane and press Enter before

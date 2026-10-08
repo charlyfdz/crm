@@ -18,6 +18,7 @@ import {
 	usesOptions,
 	writeValues,
 } from "@crm/db/fields";
+import { isAiEnabled } from "@crm/env/features";
 import {
 	BadRequestException,
 	ConflictException,
@@ -25,6 +26,7 @@ import {
 	NotFoundException,
 } from "@nestjs/common";
 import { AgentTriggerService } from "../agent/agent-trigger.service";
+import { requireApiAiEnabled } from "../agent/ai-policy";
 import { InjectDatabase } from "../database/database.constants";
 import type {
 	FieldCreateInput,
@@ -125,7 +127,7 @@ export class FieldsService {
 			include: WITH_OPTIONS,
 		});
 
-		if (definition.agentFilled) {
+		if (isAiEnabled() && definition.agentFilled) {
 			const ids = await this.missingRecordIds(
 				definition.entity,
 				definition.id,
@@ -220,7 +222,7 @@ export class FieldsService {
 			data.agentBrief !== undefined && data.agentBrief !== existing.agentBrief;
 		const turnedOn = data.agentFilled === true && !existing.agentFilled;
 
-		if (definition.agentFilled && (briefChanged || turnedOn)) {
+		if (isAiEnabled() && definition.agentFilled && (briefChanged || turnedOn)) {
 			const ids = await this.missingRecordIds(
 				definition.entity,
 				definition.id,
@@ -302,6 +304,7 @@ export class FieldsService {
 	}
 
 	async backfill(id: string): Promise<{ queued: boolean }> {
+		requireApiAiEnabled();
 		const definition = await this.db.fieldDefinition.findUnique({
 			where: { id },
 			select: {
@@ -333,7 +336,9 @@ export class FieldsService {
 			"Asked to fill the rest",
 		);
 
-		return { queued: result.queued > 0 || result.merged > 0 };
+		return {
+			queued: isAiEnabled() && (result.queued > 0 || result.merged > 0),
+		};
 	}
 
 	/** Every agent-filled field is inherently blank on a record that was just created. */
@@ -341,6 +346,7 @@ export class FieldsService {
 		entity: FieldEntity,
 		recordId: string,
 	): Promise<void> {
+		if (!isAiEnabled()) return;
 		const definitions = await this.db.fieldDefinition.findMany({
 			where: { entity, archivedAt: null, agentFilled: true },
 			select: { key: true },

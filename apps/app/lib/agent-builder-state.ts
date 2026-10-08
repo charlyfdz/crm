@@ -23,6 +23,7 @@ type BuilderAgentState = {
 };
 
 export type BuilderConversationState = {
+	ai?: { enabled: boolean };
 	sessionId: string | null;
 	continuationToken: string | null;
 	submissions: Array<{ status: string }>;
@@ -50,6 +51,7 @@ export function completedBuilderSteps(
 export function builderConversationIsWorking(
 	conversation: BuilderConversationState,
 ): boolean {
+	if (conversation.ai?.enabled === false) return false;
 	return (
 		conversation.submissions.some((submission) =>
 			["PENDING", "SENDING"].includes(submission.status),

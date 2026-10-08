@@ -36,9 +36,20 @@ import {
 	savingValue,
 } from "@/components/crm/inline-field";
 import { OwnerCell } from "@/components/crm/owner-cell";
+import {
+	recordControls,
+	recordOwnerOptions,
+} from "@/components/crm/record-control-policy";
+import {
+	RecordEditScope,
+	RecordReadOnlyNotice,
+} from "@/components/crm/record-edit-scope";
 import { ContactSocials } from "@/components/crm/social-links";
-import { DealStageMenu } from "@/components/crm/stage-change";
 import { Timeline } from "@/components/crm/timeline/timeline";
+import {
+	useRecordOwners,
+	useRecordViewer,
+} from "@/components/crm/use-record-viewer";
 import { WebsiteActivity } from "@/components/crm/website-activity";
 import {
 	DetailSheetBody,
@@ -52,6 +63,7 @@ import {
 	type DetailSheetTab,
 } from "@/components/detail-sheet";
 import { LocalDateTime, LocalRelativeDate } from "@/components/local-date-time";
+import { DealStageControl } from "@/components/pipelines/deal-stage-control";
 import { factsByField } from "@/lib/contact-facts";
 import { ENRICHMENT_POLL_MS, isEnriching } from "@/lib/enrichment-status";
 import { savingField } from "@/lib/pending-field";
@@ -95,12 +107,24 @@ export function ContactSheet({ contactId }: { contactId: string }) {
 		...trpc.contacts.byId.queryOptions({ id: contactId }),
 		refetchInterval: (current) => {
 			const record = current.state.data;
-			return record && isEnriching(record.enrichmentStatus, record.queued)
+			return record &&
+				isEnriching(record.enrichmentStatus, record.queued, record.ai.enabled)
 				? ENRICHMENT_POLL_MS
 				: false;
 		},
 	});
 	const contact = query.data;
+	const { viewer } = useRecordViewer();
+	const access = contact ? recordControls(viewer, contact) : null;
+	const company = useQuery({
+		...trpc.companies.byId.queryOptions({ id: contact?.company?.id ?? "" }),
+		enabled: Boolean(contact?.company),
+	});
+	const canSetPrimary = Boolean(
+		company.isSuccess &&
+			recordControls(viewer, company.data).canEdit &&
+			!contact?.archivedAt,
+	);
 
 	const setPrimary = useMutation(
 		trpc.companies.setPrimaryContact.mutationOptions({
@@ -133,7 +157,11 @@ export function ContactSheet({ contactId }: { contactId: string }) {
 				{
 					value: "agent",
 					label: "Agent",
-					content: <AgentPanel record={{ kind: "contact", id: contact.id }} />,
+					content: contact.ai.enabled ? (
+						<AgentPanel record={{ kind: "contact", id: contact.id }} />
+					) : (
+						<AiDisabledNotice />
+					),
 					keepMounted: true,
 				},
 			]
@@ -162,6 +190,7 @@ export function ContactSheet({ contactId }: { contactId: string }) {
 							<EnrichmentIndicator
 								status={contact.enrichmentStatus}
 								queued={contact.queued}
+								aiEnabled={contact.ai.enabled}
 								title={contact.enrichmentError}
 							/>
 						) : null}
@@ -179,7 +208,9 @@ export function ContactSheet({ contactId }: { contactId: string }) {
 			actions={
 				contact ? (
 					<>
-						<ContactEnrichmentAction contactId={contact.id} />
+						{contact.ai.enabled && access?.canEdit ? (
+							<ContactEnrichmentAction contactId={contact.id} />
+						) : null}
 						{contact.email ? (
 							<Button asChild variant="outline" size="sm">
 								<a href={`mailto:${contact.email}`}>
@@ -188,7 +219,7 @@ export function ContactSheet({ contactId }: { contactId: string }) {
 								</a>
 							</Button>
 						) : null}
-						{contact.company && !contact.isPrimaryContact ? (
+						{contact.company && canSetPrimary ? (
 							<Button
 								variant="outline"
 								size="sm"
@@ -196,12 +227,16 @@ export function ContactSheet({ contactId }: { contactId: string }) {
 								onClick={() =>
 									setPrimary.mutate({
 										companyId: contact.company?.id ?? "",
-										contactId: contact.id,
+										contactId: contact.isPrimaryContact ? null : contact.id,
 									})
 								}
 							>
 								<Icon icon={Star} data-icon="inline-start" />
-								<span className="hidden sm:inline">Make primary</span>
+								<span>
+									{contact.isPrimaryContact
+										? "Quitar principal"
+										: "Marcar principal"}
+								</span>
 							</Button>
 						) : null}
 						<RecordActions
@@ -209,6 +244,7 @@ export function ContactSheet({ contactId }: { contactId: string }) {
 							name={contactName(contact)}
 							consequence={`Their notes, agent conversations and everything the agent found go too; emails and meetings stay filed against the company.${contact.email ? ` The sync will not bring ${contact.email} back — only adding them yourself will.` : ""}`}
 							archivedAt={contact.archivedAt}
+							owner={contact.owner}
 						/>
 					</>
 				) : null
@@ -289,7 +325,9 @@ function ContactOverview({ contact }: { contact: Contact }) {
 	const trpc = useTRPC();
 	const cache = useCrmCache();
 
-	const users = useQuery(trpc.users.list.queryOptions());
+	const viewer = useRecordViewer();
+	const access = recordControls(viewer.viewer, contact);
+	const users = useRecordOwners(access.canAssign);
 
 	const { applied, proposed } = factsByField(contact.facts);
 
@@ -322,113 +360,121 @@ function ContactOverview({ contact }: { contact: Contact }) {
 	const isSaving = savingField(update);
 
 	return (
-		<DetailSheetBody>
-			<DetailSheetSection title="Details" action={<FieldsCog kind="contact" />}>
-				<DetailSheetProperties>
-					<InlineField
-						label="First name"
-						value={contact.firstName}
-						saving={isSaving("firstName")}
-						onSave={(firstName) => firstName && save({ firstName })}
+		<RecordEditScope readOnly={!access.canEdit}>
+			<DetailSheetBody>
+				{!access.canEdit ? (
+					<RecordReadOnlyNotice
+						archived={Boolean(contact.archivedAt)}
+						loading={viewer.loading}
+						error={viewer.error}
 					/>
-					<InlineField
-						label="Last name"
-						value={contact.lastName}
-						saving={isSaving("lastName")}
-						onSave={(lastName) => save({ lastName })}
-					/>
-					<InlineField
-						label="Title"
-						value={contact.title}
-						placeholder="Head of Security"
-						saving={isSaving("title")}
-						onSave={(title) => save({ title })}
-						{...agentProps("title")}
-					/>
-					<InlineField
-						label="Email"
-						value={contact.email}
-						type="email"
-						saving={isSaving("email")}
-						onSave={(email) => save({ email })}
-					/>
-					<InlineField
-						label="Phone"
-						value={contact.phone}
-						type="tel"
-						saving={isSaving("phone")}
-						onSave={(phone) => save({ phone })}
-					/>
-					<InlineField
-						label="LinkedIn"
-						value={contact.linkedinUrl}
-						type="url"
-						saving={isSaving("linkedinUrl")}
-						onSave={(linkedinUrl) => save({ linkedinUrl })}
-						{...agentProps("linkedinUrl")}
-					/>
-					<InlineField
-						label="X"
-						value={contact.twitterUrl}
-						type="url"
-						saving={isSaving("twitterUrl")}
-						onSave={(twitterUrl) => save({ twitterUrl })}
-						{...agentProps("twitterUrl")}
-					/>
-					<InlineField
-						label="GitHub"
-						value={contact.githubUrl}
-						type="url"
-						saving={isSaving("githubUrl")}
-						onSave={(githubUrl) => save({ githubUrl })}
-						{...agentProps("githubUrl")}
-					/>
-					<InlineCompanyField
-						value={contact.company?.id ?? NONE}
-						company={contact.company}
-						saving={isSaving("companyId")}
-						none={{ value: NONE, label: "No company" }}
-						onSave={(companyId) =>
-							save({ companyId: companyId === NONE ? null : companyId })
-						}
-					/>
-					<InlineSelectField
-						label="Owner"
-						value={contact.owner?.id ?? NONE}
-						options={[
-							{ value: NONE, label: "Unassigned" },
-							...(users.data ?? []).map((user) => ({
-								value: user.id,
-								label: user.name,
-							})),
-						]}
-						onSave={(ownerId) =>
-							save({ ownerId: ownerId === NONE ? null : ownerId })
-						}
-					/>
-					<RecordFields
-						fields={contact.fields}
-						saving={isSavingField}
-						onSave={saveFields}
-					/>
-				</DetailSheetProperties>
-			</DetailSheetSection>
-
-			{contact.brief ? <Background brief={contact.brief} /> : null}
-
-			<WeKnowThem
-				relationship={contact.relationship}
-				contactName={contactName(contact)}
-			/>
-
-			{hasContactLinks(contact) ? (
-				<DetailSheetSection title="Links">
-					<ContactSocials contact={contact} />
+				) : null}
+				<DetailSheetSection
+					title="Details"
+					action={<FieldsCog kind="contact" />}
+				>
+					<DetailSheetProperties>
+						<InlineField
+							label="First name"
+							value={contact.firstName}
+							saving={isSaving("firstName")}
+							onSave={(firstName) => firstName && save({ firstName })}
+						/>
+						<InlineField
+							label="Last name"
+							value={contact.lastName}
+							saving={isSaving("lastName")}
+							onSave={(lastName) => save({ lastName })}
+						/>
+						<InlineField
+							label="Title"
+							value={contact.title}
+							placeholder="Head of Security"
+							saving={isSaving("title")}
+							onSave={(title) => save({ title })}
+							{...agentProps("title")}
+						/>
+						<InlineField
+							label="Email"
+							value={contact.email}
+							type="email"
+							saving={isSaving("email")}
+							onSave={(email) => save({ email })}
+						/>
+						<InlineField
+							label="Phone"
+							value={contact.phone}
+							type="tel"
+							saving={isSaving("phone")}
+							onSave={(phone) => save({ phone })}
+						/>
+						<InlineField
+							label="LinkedIn"
+							value={contact.linkedinUrl}
+							type="url"
+							saving={isSaving("linkedinUrl")}
+							onSave={(linkedinUrl) => save({ linkedinUrl })}
+							{...agentProps("linkedinUrl")}
+						/>
+						<InlineField
+							label="X"
+							value={contact.twitterUrl}
+							type="url"
+							saving={isSaving("twitterUrl")}
+							onSave={(twitterUrl) => save({ twitterUrl })}
+							{...agentProps("twitterUrl")}
+						/>
+						<InlineField
+							label="GitHub"
+							value={contact.githubUrl}
+							type="url"
+							saving={isSaving("githubUrl")}
+							onSave={(githubUrl) => save({ githubUrl })}
+							{...agentProps("githubUrl")}
+						/>
+						<InlineCompanyField
+							readOnly={contact.isPrimaryContact || contact.deals.length > 0}
+							value={contact.company?.id ?? NONE}
+							company={contact.company}
+							saving={isSaving("companyId")}
+							none={{ value: NONE, label: "No company" }}
+							onSave={(companyId) =>
+								save({ companyId: companyId === NONE ? null : companyId })
+							}
+						/>
+						<InlineSelectField
+							label="Owner"
+							value={contact.owner?.id ?? NONE}
+							options={recordOwnerOptions(users.users, contact.owner, NONE)}
+							readOnly={!access.canAssign || !users.ready}
+							onSave={(ownerId) =>
+								save({ ownerId: ownerId === NONE ? null : ownerId })
+							}
+						/>
+						<RecordFields
+							fields={contact.fields}
+							saving={isSavingField}
+							onSave={saveFields}
+						/>
+					</DetailSheetProperties>
 				</DetailSheetSection>
-			) : null}
 
-			<WebsiteActivity contactId={contact.id} />
-		</DetailSheetBody>
+				{contact.brief ? <Background brief={contact.brief} /> : null}
+
+				<WeKnowThem
+					relationship={contact.relationship}
+					contactName={contactName(contact)}
+				/>
+
+				{hasContactLinks(contact) ? (
+					<DetailSheetSection title="Links">
+						<ContactSocials contact={contact} />
+					</DetailSheetSection>
+				) : null}
+
+				<WebsiteActivity contactId={contact.id} />
+			</DetailSheetBody>
+		</RecordEditScope>
 	);
 }
 
@@ -618,7 +664,7 @@ function ContactDeals({ contact }: { contact: Contact }) {
 						{deal.role ?? <EmptyCellValue />}
 					</TableCell>
 					<TableCell className="px-3 py-2.5">
-						<DealStageMenu dealId={deal.id} stage={deal.stage} />
+						<DealStageControl dealId={deal.id} />
 					</TableCell>
 					<TableCell className="px-3 py-2.5 text-right">
 						<DealAmount
@@ -634,3 +680,5 @@ function ContactDeals({ contact }: { contact: Contact }) {
 		</SimpleTable>
 	);
 }
+
+import { AiDisabledNotice } from "@/components/ai-disabled-notice";

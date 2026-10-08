@@ -1,0 +1,6 @@
+case_id,entity,source_id,field,value,expected_policy
+DUP-DOMAIN,company,A-004,domain,ALBA.EXAMPLE.TEST,REVIEW_DUPLICATE
+BAD-EMAIL,contact,C-004,email,correo-invalido,REJECT_EMAIL
+MISSING-RELATION,contact,C-005,company_source_id,A-999,REJECT_RELATION
+UNSUPPORTED-CURRENCY,deal,D-005,currency,MXN,REJECT_UNSUPPORTED
+FORMULA-TEXT,company,A-005,name,=1+1,KEEP_TEXT_ESCAPE_EXPORT

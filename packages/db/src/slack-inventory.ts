@@ -1,5 +1,6 @@
+import { isAiEnabled } from "@crm/env/features";
 import { PRIORITY } from "./agent-tasks";
-import { db } from "./client";
+import { type Db, db } from "./client";
 import { lockIdempotencyKey } from "./idempotency";
 
 const MINUTE_MS = 60_000;
@@ -12,12 +13,18 @@ export const SLACK_INVENTORY = {
 	throttleMs: 15 * MINUTE_MS,
 } as const;
 
-export async function queueSlackInventorySync(reason: string): Promise<void> {
+export async function queueSlackInventorySync(
+	reason: string,
+	database: Db = db,
+): Promise<void> {
+	if (!isAiEnabled()) return;
 	const since = new Date(Date.now() - SLACK_INVENTORY.throttleMs);
 
 	try {
-		await db.$transaction(async (tx) => {
+		await database.$transaction(async (tx) => {
+			if (!isAiEnabled()) return;
 			await lockIdempotencyKey(tx, SLACK_INVENTORY.lock);
+			if (!isAiEnabled()) return;
 
 			const recent = await tx.agentTask.findFirst({
 				where: {
@@ -26,7 +33,7 @@ export async function queueSlackInventorySync(reason: string): Promise<void> {
 				},
 				select: { id: true },
 			});
-			if (recent) return;
+			if (recent || !isAiEnabled()) return;
 
 			await tx.agentTask.create({
 				data: {

@@ -43,18 +43,24 @@ here, what do we sell.
 
 - **The id is a constant, never a parameter.** A function taking an `organizationId`
   has turned the plugin into tenancy plumbing.
-- **Signing in is the join; no invite flow.** `ensureWorkspaceMembership` runs in
-  `databaseHooks.session.create.before` and **degrades, never throws** — a throw fails
-  the session create and locks everyone out. The plugin's `invitation` table is unused.
-- **First account is owner**, and the hook enrols pre-existing users, oldest first.
+- Public registration is closed. An operator provisions the first owner on an empty installation.
+- Provisioning creates the account, credential and membership in one locked transaction.
+- Login requires an existing membership and an eligible email. Login never creates membership or promotes an owner.
+- `ensureWorkspaceMembership` remains legacy code. The login hook does not call it.
 - **Permissions come from `@crm/auth`** — `canRenameWorkspace`, `canChangeRole`,
   `canConfigureSso`, `canManageCurrency` — enforced by the service *and* used to
   disable the UI control, so the button and the 403 cannot disagree.
-  `WorkspaceService` adds one invariant: **the last owner cannot be demoted**, with
-  `FOR UPDATE` on the owner rows before counting.
+  `WorkspaceService` protects the last active owner from demotion and suspension.
+  Identity changes share the provisioning advisory lock and ordered membership row locks.
+  Authority is checked inside the transaction. Admins manage members only; owners manage elevated roles.
+  Company updates use the same identity lock plus the organization row lock.
+  They preserve metadata and return the saved snapshot without a post-commit membership reread.
+  Company updates require a human session. Optional research dispatch remains a separate post-commit path.
 - **Reads and writes go through tRPC**, not `authClient.organization.*`.
 - **Name and website are required at onboarding and cannot be skipped**, in the form
   *and* in `updateWorkspaceInput`, posting the same `workspace.update` as settings.
+  The primary action saves the workspace and opens the manual CRM.
+  A separate action opens optional research configuration after the same save.
 - **Onboarded state is `onboardedAt` inside the plugin's `metadata` blob**, not a
   column; `isOnboarded`/`markOnboarded` (`@crm/db/workspace`) are the only accessors,
   and `markOnboarded` preserves every other key.
@@ -67,20 +73,22 @@ here, what do we sell.
 
 ### Gates in `proxy.ts`
 
-Onboarding, then `/onboarding/research` for the Context key. Asked server-side every
-request.
+Workspace onboarding is the only setup gate. The proxy reads `workspace.get` on every request.
+Manual CRM access requires no Context.dev key and no AI agent.
 
 - **`getSessionCookie()` decides signed-in**; pages still resolve the real session via
   `requireMailboxAccess()`.
-- **Nothing is cached in a cookie** — both facts revert on a database reset while a
-  year-long marker insists the gate passed. Cache in the API if cost ever matters.
-- **Both reads run concurrently**, but order decides which is *asked* — the research
-  read is never made while onboarding is open.
+- **Nothing is cached in a cookie** — a database reset changes the next workspace answer.
+- **Research settings never control access** — the proxy does not read `settings.researchKey`.
 - **An unreachable API fails open** (`unknown` lets the request through).
 - **`/sign-in`, `/grant-access`, `/eve` are ungated.** `/sign-in` is the only path a
   stranger may read; `/` joins it only when `IS_MARKETING` is set.
-- **There is no way past the key gate but to answer** — Skip stranded installs, every
-  later company sitting `PENDING` with nothing saying so.
+- **`/onboarding/research` remains available after workspace setup**, with or without a saved key.
+  Its Spanish form offers `Continuar sin IA` as navigation without saving a key or changing AI policy.
+  The server passes the installation's AI policy to the form.
+  Disabled AI prevents research-settings queries and key submissions from this form.
+  Enabled AI permits voluntary key configuration; saving a key never proves agent availability.
+  The form reports loading, missing, configured, and unreadable key states without blocking manual access.
 
 ### The name is also the URL
 
@@ -89,7 +97,7 @@ every query still resolves through `WORKSPACE_ID`.
 
 - **The slug is the plugin's column**, written by `workspaceSlug(name)`
   (`@crm/db/workspace`) on rename and create. **Never derive it on read.**
-- `ensureWorkspaceMembership` reconciles it; `RESERVED_SLUGS` prevents collision with
+- Provisioning writes the initial slug; `RESERVED_SLUGS` prevents collision with
   a real route (a collision gets `-crm`).
 - **The proxy is the only thing that puts the slug on.** Missing or stale slugs are
   redirected with the query string intact, not 404'd; `[slug]/layout.tsx` is the
@@ -112,8 +120,8 @@ self-hoster's admin cannot redeploy.
   takes `AuthMiddleware` at the *method*, which is what leaves it open. A client
   secret is never read back out.
 - **It is the API's answer, not the app's** — the API serves `/api/auth/*`.
-- **An install with no Google, no Microsoft and no provider says so**, naming the
-  variables; a read that *fails* falls back to offering Google.
+- Local sign-in remains available without Google, Microsoft or SSO.
+- An unreadable provider configuration never creates a phantom Google button.
 - **A provider hides the social buttons, it does not disable them** —
   `/sign-in?method=google` and `?method=microsoft` still work, so a mistyped issuer
   cannot lock an admin out.
@@ -121,10 +129,9 @@ self-hoster's admin cannot redeploy.
   walls only an account whose sign-in rows are *all* mailbox providers — Google,
   Microsoft, or both — and none of them granted. `mailboxGrantsNeeded` returns which,
   so `/grant-access` offers the button they can actually use.
-- `ALLOWED_SIGN_IN` still decides who gets an account, in
-  `databaseHooks.user.create.before`, for SSO sign-ups too.
-- `organizationProvisioning: { disabled: true }` — `ensureWorkspaceMembership` already
-  does the join.
+- `databaseHooks.user.create.before` rejects public account creation, including SSO sign-ups.
+- `ALLOWED_SIGN_IN` and existing membership also gate session creation.
+- `organizationProvisioning: { disabled: true }` prevents automatic SSO membership provisioning.
 
 ## tRPC is the data surface; REST is auth and health only
 
@@ -245,9 +252,8 @@ row is still there, just filtered out of every list.
 - **`purge` is the old `delete`.** Same transaction, same suppression, same
   `AgentTask`/`AgentEvent` cleanup, same `ActivityStampService.recomputeAfterDelete`.
   Read the rest of this section as `purge`'s contract, not `archive`'s.
-- **A rep can `purge` straight from the Archived view — retention is a ceiling, not a
-  wait.** `bulkPurge`/the per-record "Delete forever" action call it directly, no
-  different from the cron.
+- Opportunity purge requires an owner and prior archive. Other entity purge paths
+  still need complete corporate authorization. Do not infer a rep's deletion authority from this legacy interface.
 
 **Pruning**: `ArchiveRetentionController` (`internal/archive/prune`, `CRON_SECRET`-gated,
 `apps/api/vercel.json`) reads `AppSetting.archiveRetentionDays`
@@ -311,3 +317,126 @@ Read it before touching any amount, total, chart or rate.
 - **Background writes need polling, not invalidation** — `refetchInterval` while
   `PENDING`/`RUNNING`, via `isEnriching()` and `ENRICHMENT_POLL_MS`. **Lists poll too,
   not just the sheet.**
+
+## Configurable processes and assigned tasks — 2026-10-02
+
+`pipelines.list` returns stable process and stage identifiers.
+`pipelines.configure` requires owner or admin membership and an expected revision for an existing process.
+It preserves existing stage outcomes and identifiers. New stages require explicit result classifications.
+The outcomes are OPEN, WON, LOST, and DISQUALIFIED. Custom names do not create new result enums.
+Stages retire instead of disappearing. Occupied stages and occupied processes cannot retire.
+The default process stays active. A replacement default requires an explicit configuration change.
+
+Opportunity creation records the acting server user and selected stage snapshot.
+Members assign opportunities to themselves. Owners and admins select another current member.
+`deals.setStage` accepts a stable stage identifier. A cross-process move requires the explicit process identifier.
+Lost and disqualified results require a reason. The service locks the record and validates current membership inside the transaction.
+`deals.stageHistory` returns actor, date, reason, and immutable process and stage name snapshots.
+History does not fabricate transitions for migrated legacy records.
+Entering WON creates a handoff task for the opportunity owner. Repeating the same stage does not duplicate that transition.
+Reopening and winning again creates a new handoff task. No contractual SLA is assigned by this rule.
+
+`deals.bulkSetStage` applies the same per-record stage rules and returns partial success information.
+It does not promise a transaction across all selected records.
+`pipelineStageIds` filters actual stage identifiers. The legacy `stage` filter remains a result classification filter.
+Stage sorting uses process name, stage position, expected close date, and record ID.
+
+`activities.create`, `updateTask`, and `complete` use the acting server identity, never a submitted author.
+Author and assignee are separate. Reassignment never rewrites authorship.
+Task priorities span zero through three. Deadlines require an explicit zoned instant.
+Members edit their authored or assigned tasks. Owners and admins also edit other tasks and reassign them.
+Current membership and all linked record relationships are checked inside the transaction.
+Archived links reject task creation and mutation. Personal queues use the assignee.
+Serializable conflicts return an explicit conflict. Unexpected database errors remain errors.
+Derived activity-stamp failures are logged after commit. They do not report a committed mutation as failed.
+
+`cache.pipelines()`, `cache.deal(id)`, and `cache.activity()` invalidate related views and stage history.
+The [business receipt](verification/2026-10-02-business-flow.md) records the earlier tested paths.
+
+## Opportunity authorization increment — 2026-10-03
+
+All eighteen `deals` router methods forward `ctx.user.id` to the service.
+Public contracts do not accept an acting identity or retention cutoff.
+Opportunity reads require current workspace membership. Members read the shared installation, not only their assigned opportunities.
+Supported roles remain owner, admin, and member. Unknown roles fail closed. The five-role product policy remains incomplete.
+
+Update, archive, restore, and contact-link mutations lock current membership and the opportunity inside a transaction.
+Members modify their own opportunities. Owners and admins modify other opportunities.
+Reassignment requires owner or admin authority and a current supported workspace member as the target.
+Archived opportunities reject edits and contact-link changes. Restore precedes further mutation.
+Repeating archive preserves the first archive timestamp and does not extend the retention deadline.
+Contact attachment and role changes require an active same-company contact. Detachment repairs a stale link.
+Company transfers require an active destination and cannot invalidate attached contact relationships.
+
+Money preparation runs outside the write transaction. The locked write compares the prepared amount and currency snapshot.
+A changed amount or currency produces a conflict instead of overwriting the newer money.
+Current membership is checked again after preparation. This prevents writes after a role change at that boundary.
+These tests do not prove simultaneous PostgreSQL concurrency or transactional report snapshots.
+
+Public purge requires owner authority and an archived opportunity. Admin purge grants remain unimplemented and denied.
+Trusted retention uses a private cutoff-guarded deletion helper. It does not obtain authority from a submitted user or body field.
+The existing retention controller still requires separate operational review before enabling scheduled deletion.
+Bulk operations check each record and report partial success. They do not promise a single transaction across the selection.
+
+The [authorization receipt](verification/2026-10-03-opportunity-authorization.md) records isolated tests and remaining work.
+Companies, contacts, fields, keys, exports, workers, and other routers still require complete corporate authorization review.
+
+## Managed identity increment — 2026-10-03
+
+`AuthMiddleware` consults current workspace membership through the injected database for every protected procedure.
+Missing, unknown and suspended roles are rejected. App server session gates also require active membership.
+Workspace reads no longer create membership. The legacy enrolment helper is not a fallback from workspace.get.
+Supported roles remain owner, admin and member. Manager, rep and viewer are not accepted until their entire policy is implemented.
+
+`workspace.createMember`, `setMemberRole`, `setMemberStatus`, `resetMemberPassword`, and `identityAudit` require a human session, not an API key.
+Creation validates address eligibility and creates user, credential, membership and identity audit in one locked transaction.
+An admin creates/manages only members. Only owners manage elevated users and assign elevated roles.
+The last active owner cannot be demoted or suspended. Suspended owners do not satisfy this invariant.
+Role changes and status changes revoke all existing sessions and disable keys atomically with their audit event.
+Reactivation never enables old keys or cookies. Repeat status changes preserve date and do not create duplicate events.
+Recovery changes an existing local credential, requires a reason, revokes access, and never returns the password or hash.
+Self-recovery through the administrative endpoint is rejected. Mail delivery, first-owner recovery and forced password change remain pending.
+
+`identityAuditEvent` preserves actor and role/status snapshots without generated credentials. Ordinary row edits and deletions are rejected by a database trigger.
+The database operator remains outside this protection boundary. Business audit completeness is not implied.
+`workspace.members.activeOnly` filters suspended memberships for assignment pickers while user management can inspect all memberships.
+
+Direct HTTP organization and API-key plugin endpoints are disabled using their actual registered paths.
+Guarded tRPC services retain the server SDK; frontend calls must not use authClient.organization or authClient.apiKey management.
+Key management requires owner/admin and finite expiration. Creation rechecks current authority before returning its secret; changed authority disables the new key.
+Key scopes, dedicated credentials for workers and remaining plugin paths need separate implementation/review.
+The [identity receipt](verification/2026-10-03-managed-identity.md) includes actual loopback Nest/tRPC HTTP checks, not just direct service calls.
+
+## Company and contact authorization increment — 2026-10-04
+
+All sixteen company procedures and fifteen contact procedures pass `ctx.user.id` as a required service argument.
+Public contracts never derive authority from submitted owner, actor or retention fields.
+`crm/record-access.ts` checks current supported membership and suspension. Service reads also require that membership.
+Shared reads remain installation-wide. Owner filters do not create confidential record scopes.
+Write transactions lock membership and the record before ownership checks or custom-field changes.
+Members modify assigned records only. Owners and admins also modify other records and reassign responsibility.
+Assignment targets require active supported membership. Creation defaults to the authenticated actor.
+Members cannot claim unassigned records. Elevated actors can explicitly clear assignment.
+
+Archived records reject edits. Repeated archive preserves its first timestamp.
+Bulk operations apply per-record checks and return partial results. They do not promise a selection-wide transaction.
+Public purge requires an owner and prior archive. Private retention rechecks the locked archive cutoff.
+Company purge locks child opportunities and rejects active children. Trusted retention skips that company instead.
+Existing suppression, agent cleanup, cascading relations and post-commit activity restamping remain preserved.
+
+Contact creation distinguishes omitted company selection from explicit null selection.
+`CompanyDirectoryService.companyForContact` performs optional domain matching and creation inside the contact transaction.
+It assigns automatically created companies to the checked contact owner and emits the creation event transactionally.
+The older trusted mailbox directory path remains separate and needs worker capability review.
+New and restored contacts require active linked companies.
+Primary designation requires an active same-company contact. Clear designation before moving or archiving that contact.
+Opportunity-contact links reject contact transfers until authorized detachment.
+Suggestion settlement locks the contact and rechecks proposal status before applying fields.
+
+Explicit research queues use the same transaction for authorization and task creation.
+Company/contact enrichment status updates share that transaction. Dispatch starts only after commit.
+Queue rollback tests use real SQL rows, blocked provider calls and a substituted dispatch notification.
+These tests do not accept automatic post-commit research, AI workers, concurrency, or external-provider behavior.
+Automatic company creation/domain-change research and workspace research retain separate outbox work.
+The [receipt](verification/2026-10-04-company-contact-authorization.md) records the selected SQL and real loopback HTTP checks.
+Fields, connections, exports, keys, background writers and UI permissions still need full corporate-policy implementation.

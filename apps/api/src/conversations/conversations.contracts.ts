@@ -8,6 +8,7 @@ import {
 	AgentVersionStatus,
 } from "@crm/db";
 import { z } from "zod";
+import { aiPolicyOutput } from "../agent/ai-policy";
 
 const agentManifestSummaryOutput = z.object({
 	name: z.string().optional(),
@@ -259,6 +260,7 @@ export const builderConversationSummaryOutput = z.object({
 	lastMessageAt: z.string(),
 	lastAssistantAt: z.string().nullable(),
 	unread: z.boolean(),
+	ai: aiPolicyOutput,
 	state: z.enum(["working", "unread", "deployed", "idle"]),
 	agent: builderConversationAgentSummaryOutput.nullable(),
 });
@@ -351,6 +353,7 @@ const builderSubmissionOutput = z.object({
 });
 
 export const builderConversationDetailOutput = z.object({
+	ai: aiPolicyOutput,
 	id: z.string(),
 	sessionId: z.string().nullable(),
 	continuationToken: z.string().nullable(),
@@ -405,6 +408,7 @@ const sharedConversationSubmissionOutput = z.object({
 });
 
 export const sharedConversationOutput = z.object({
+	ai: aiPolicyOutput,
 	id: z.string(),
 	title: z.string().nullable(),
 	ownerName: z.string(),

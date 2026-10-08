@@ -1,3 +1,4 @@
+import { isAiEnabled } from "@crm/env/features";
 import {
 	Injectable,
 	Logger,
@@ -17,6 +18,12 @@ export class DispatchHeartbeatService
 	constructor(private readonly trigger: AgentTriggerService) {}
 
 	onApplicationBootstrap(): void {
+		if (!isAiEnabled()) {
+			this.logger.log({
+				message: "Installation AI is disabled; dispatch heartbeat is off.",
+			});
+			return;
+		}
 		if (!this.trigger.canReachAgent()) {
 			this.logger.log({
 				message:

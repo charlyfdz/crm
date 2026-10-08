@@ -12,6 +12,10 @@ import { ConversionService } from "../src/currency/conversion.service";
 import { FieldsService } from "../src/fields/fields.service";
 import { MailboxMatchService } from "../src/mailbox/mailbox-match.service";
 import { withDiscardedCrmEvents } from "./agent-trigger.stub";
+import {
+	addFixtureMember,
+	closeFixtureClient,
+} from "./disposable-deal-regression";
 
 const suffix = process.env.TEST_RUN_ID ?? "record-delete-spec";
 const domain = `delete-${suffix}.test`;
@@ -116,20 +120,27 @@ beforeAll(async () => {
 	await db.user.create({
 		data: { id: userId, name: "Test Rep", email: `${userId}@example.test` },
 	});
+	await addFixtureMember(db, userId, "owner");
 });
 
-afterAll(clean);
+afterAll(async () => {
+	await clean();
+	await closeFixtureClient();
+});
 
 describe("purging a contact", () => {
 	let contactId: string;
 
 	it("takes the record, its queued research and its transcript with it", async () => {
-		const created = await contacts.create({
-			firstName: "Gone",
-			lastName: "Person",
-			email,
-			ownerId: userId,
-		});
+		const created = await contacts.create(
+			{
+				firstName: "Gone",
+				lastName: "Person",
+				email,
+				ownerId: userId,
+			},
+			userId,
+		);
 		contactId = created.id;
 
 		await parked({ contactId });
@@ -145,7 +156,8 @@ describe("purging a contact", () => {
 			},
 		});
 
-		expect(await contacts.purge(contactId)).toEqual({
+		await contacts.archive(contactId, userId);
+		expect(await contacts.purge(contactId, userId)).toEqual({
 			id: contactId,
 			name: "Gone Person",
 		});
@@ -199,7 +211,7 @@ describe("purging a contact", () => {
 	});
 
 	it("lets a rep add them back by hand, which lifts the suppression", async () => {
-		const readded = await contacts.create({ firstName: "Gone", email });
+		const readded = await contacts.create({ firstName: "Gone", email }, userId);
 
 		expect(
 			await db.suppressedContact.findUnique({ where: { email } }),
@@ -213,7 +225,10 @@ describe("purging a contact", () => {
 		const typed = `Mixed.Case@${domain.toUpperCase()}`;
 		const asSynced = typed.toLowerCase();
 
-		const created = await contacts.create({ firstName: "Mixed", email: typed });
+		const created = await contacts.create(
+			{ firstName: "Mixed", email: typed },
+			userId,
+		);
 
 		expect(
 			await db.contact.findUnique({
@@ -222,7 +237,8 @@ describe("purging a contact", () => {
 			}),
 		).toEqual({ email: asSynced });
 
-		await contacts.purge(created.id);
+		await contacts.archive(created.id, userId);
+		await contacts.purge(created.id, userId);
 
 		expect(
 			await db.suppressedContact.findUnique({ where: { email: asSynced } }),
@@ -247,16 +263,22 @@ describe("purging a contact", () => {
 
 describe("purging a company", () => {
 	it("takes its deals and leaves its people without a company", async () => {
-		const company = await companies.create({
-			name: "Doomed",
-			domain: doomedDomain,
-		});
-		const contact = await contacts.create({
-			firstName: "Left",
-			lastName: "Behind",
-			email: `left@${doomedDomain}`,
-			companyId: company.id,
-		});
+		const company = await companies.create(
+			{
+				name: "Doomed",
+				domain: doomedDomain,
+			},
+			userId,
+		);
+		const contact = await contacts.create(
+			{
+				firstName: "Left",
+				lastName: "Behind",
+				email: `left@${doomedDomain}`,
+				companyId: company.id,
+			},
+			userId,
+		);
 		const deal = await db.deal.create({
 			data: { name: "Doomed deal", companyId: company.id, ownerId: userId },
 			select: { id: true },
@@ -264,7 +286,12 @@ describe("purging a company", () => {
 
 		await parked({ companyId: company.id });
 
-		expect(await companies.purge(company.id)).toEqual({
+		await db.deal.update({
+			where: { id: deal.id },
+			data: { archivedAt: new Date() },
+		});
+		await companies.archive(company.id, userId);
+		expect(await companies.purge(company.id, userId)).toEqual({
 			id: company.id,
 			name: "Doomed",
 		});
@@ -286,15 +313,21 @@ describe("purging a company", () => {
 
 describe("the activity stamps a purge leaves behind", () => {
 	it("are recomputed on every record the deleted one's activities touched", async () => {
-		const company = await companies.create({
-			name: "Stamped",
-			domain: stampDomain,
-		});
-		const contact = await contacts.create({
-			firstName: "Stamped",
-			email: `stamped@${stampDomain}`,
-			companyId: company.id,
-		});
+		const company = await companies.create(
+			{
+				name: "Stamped",
+				domain: stampDomain,
+			},
+			userId,
+		);
+		const contact = await contacts.create(
+			{
+				firstName: "Stamped",
+				email: `stamped@${stampDomain}`,
+				companyId: company.id,
+			},
+			userId,
+		);
 		const deal = await db.deal.create({
 			data: { name: "Stamped deal", companyId: company.id, ownerId: userId },
 			select: { id: true },
@@ -317,7 +350,8 @@ describe("the activity stamps a purge leaves behind", () => {
 			at,
 		);
 
-		await contacts.purge(contact.id);
+		await contacts.archive(contact.id, userId);
+		await contacts.purge(contact.id, userId);
 
 		expect(
 			await db.company.findUnique({
@@ -334,15 +368,21 @@ describe("the activity stamps a purge leaves behind", () => {
 	});
 
 	it("follow a deleted company through the deals it takes with it", async () => {
-		const company = await companies.create({
-			name: "Orphaner",
-			domain: orphanDomain,
-		});
-		const contact = await contacts.create({
-			firstName: "Orphaned",
-			email: `orphaned@${orphanDomain}`,
-			companyId: company.id,
-		});
+		const company = await companies.create(
+			{
+				name: "Orphaner",
+				domain: orphanDomain,
+			},
+			userId,
+		);
+		const contact = await contacts.create(
+			{
+				firstName: "Orphaned",
+				email: `orphaned@${orphanDomain}`,
+				companyId: company.id,
+			},
+			userId,
+		);
 		const deal = await db.deal.create({
 			data: { name: "Orphaned deal", companyId: company.id, ownerId: userId },
 			select: { id: true },
@@ -361,7 +401,12 @@ describe("the activity stamps a purge leaves behind", () => {
 		});
 		await stamp.touch({ contactId: contact.id, dealId: deal.id }, at);
 
-		await companies.purge(company.id);
+		await db.deal.update({
+			where: { id: deal.id },
+			data: { archivedAt: new Date() },
+		});
+		await companies.archive(company.id, userId);
+		await companies.purge(company.id, userId);
 
 		expect(
 			await db.contact.findUnique({

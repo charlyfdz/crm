@@ -1,3 +1,4 @@
+import { isAiEnabled } from "@crm/env/features";
 import { CACHE_MANAGER } from "@nestjs/cache-manager";
 import { Inject, Injectable, Logger } from "@nestjs/common";
 import type { Cache } from "cache-manager";
@@ -69,6 +70,7 @@ export class ModelCatalogService {
 	constructor(@Inject(CACHE_MANAGER) private readonly cache: Cache) {}
 
 	async models(): Promise<CatalogModel[] | null> {
+		if (!isAiEnabled()) return null;
 		const cached = await this.cache.get<CatalogModel[]>(CATALOG_KEY);
 		if (cached) return cached;
 
@@ -85,6 +87,7 @@ export class ModelCatalogService {
 	}
 
 	private async fetchCatalog(): Promise<CatalogModel[] | null> {
+		if (!isAiEnabled()) return null;
 		try {
 			const response = await fetch(CATALOG_URL, {
 				headers: { accept: "application/json" },

@@ -16,6 +16,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type Ref, useId, useState } from "react";
 import { PROPERTY_LABEL, PROPERTY_ROW } from "@/components/detail-sheet";
 import { useTRPC } from "@/lib/trpc/client";
+import { useRecordReadOnly } from "./record-edit-scope";
 
 export function CompanyPicker({
 	id,
@@ -164,6 +165,7 @@ export function InlineCompanyField({
 	saving = false,
 	none,
 	company,
+	readOnly = false,
 }: {
 	label?: string;
 	value: string;
@@ -171,7 +173,9 @@ export function InlineCompanyField({
 	saving?: boolean;
 	none?: { value: string; label: string };
 	company?: { id: string; name: string } | null;
+	readOnly?: boolean;
 }) {
+	const locked = useRecordReadOnly() || readOnly;
 	const id = useId();
 
 	return (
@@ -180,18 +184,22 @@ export function InlineCompanyField({
 				{label}
 			</label>
 			<div className="flex min-w-0 items-center gap-1.5">
-				<CompanyPicker
-					id={id}
-					value={value}
-					onValueChange={onSave}
-					none={none}
-					selected={
-						company ? { value: company.id, label: company.name } : undefined
-					}
-					disabled={saving}
-					variant="ghost"
-					className="w-full"
-				/>
+				{locked ? (
+					<span id={id}>{company?.name ?? none?.label ?? "Sin empresa"}</span>
+				) : (
+					<CompanyPicker
+						id={id}
+						value={value}
+						onValueChange={onSave}
+						none={none}
+						selected={
+							company ? { value: company.id, label: company.name } : undefined
+						}
+						disabled={saving}
+						variant="ghost"
+						className="w-full"
+					/>
+				)}
 				{saving ? <Spinner /> : null}
 			</div>
 		</div>

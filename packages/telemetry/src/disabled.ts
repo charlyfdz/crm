@@ -6,6 +6,7 @@ export function telemetryDisabled(
 	env: Record<string, string | undefined> = process.env,
 ): boolean {
 	if (env.NODE_ENV === "test") return true;
+	if (!isTruthy(env.CRM_TELEMETRY_ENABLED)) return true;
 
 	return DISABLE_VARIABLES.some((name) => isTruthy(env[name]));
 }

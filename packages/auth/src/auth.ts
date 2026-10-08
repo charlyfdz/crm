@@ -7,10 +7,11 @@ import { prismaAdapter } from "better-auth/adapters/prisma";
 import { APIError } from "better-auth/api";
 import { genericOAuth } from "better-auth/plugins/generic-oauth";
 import { organization } from "better-auth/plugins/organization";
+import { ACCESS } from "./access-config";
 import { API_KEY_EXPIRATION, API_KEY_HEADER, API_KEY_PREFIX } from "./api-keys";
 import { AUTH_COOKIE_PREFIX } from "./cookies";
 import { env } from "./env";
-import { ensureWorkspaceMembership } from "./organization";
+import { WORKSPACE_ID, workspaceRoleOf } from "./organization";
 import {
 	GOOGLE_PROVIDER_ID,
 	MICROSOFT_PROVIDER_ID,
@@ -23,11 +24,7 @@ import { slackConnectGuard } from "./slack-connect";
 import { rememberSlackInstall, replaceSlackConnection } from "./slack-grant";
 import { SLACK_REQUESTED_SCOPES, SLACK_USER_SCOPES } from "./slack-scopes";
 import { queueSlackInventorySync } from "./slack-sync";
-import {
-	hasSignInAllowList,
-	isWorkspaceEmail,
-	primaryWorkspaceDomain,
-} from "./workspace";
+import { isWorkspaceEmail, primaryWorkspaceDomain } from "./workspace";
 
 const socialProviders: NonNullable<BetterAuthOptions["socialProviders"]> = {};
 const slackOAuth = env.slack;
@@ -35,6 +32,30 @@ const slackRedirectUri = new URL(
 	"/api/auth/oauth2/callback/slack",
 	env.apiUrl,
 ).toString();
+
+const workspacePlugin = organization({
+	allowUserToCreateOrganization: false,
+	disableOrganizationDeletion: true,
+	creatorRole: "owner",
+	schema: {
+		organization: {
+			additionalFields: { website: { type: "string", required: false } },
+		},
+	},
+});
+const keyPlugin = apiKey({
+	apiKeyHeaders: API_KEY_HEADER,
+	defaultPrefix: API_KEY_PREFIX,
+	enableSessionForAPIKeys: true,
+	requireName: true,
+	defaultKeyLength: 32,
+	maximumNameLength: 64,
+	rateLimit: { enabled: false },
+	keyExpiration: {
+		maxExpiresIn: API_KEY_EXPIRATION.maxDays,
+		minExpiresIn: API_KEY_EXPIRATION.minDays,
+	},
+});
 
 if (env.google) {
 	const google: NonNullable<typeof socialProviders.google> = {
@@ -76,9 +97,18 @@ export const auth = betterAuth({
 	database: prismaAdapter(db, {
 		provider: "postgresql",
 	}),
+	disabledPaths: [
+		...Object.values(workspacePlugin.endpoints).map(
+			(endpoint) => endpoint.path,
+		),
+		...Object.values(keyPlugin.endpoints).map((endpoint) => endpoint.path),
+	],
 
 	emailAndPassword: {
-		enabled: false,
+		enabled: true,
+		disableSignUp: true,
+		minPasswordLength: ACCESS.password.minLength,
+		maxPasswordLength: ACCESS.password.maxLength,
 	},
 
 	socialProviders,
@@ -94,8 +124,7 @@ export const auth = betterAuth({
 		expiresIn: 60 * 60 * 24 * 7,
 		updateAge: 60 * 60 * 24,
 		cookieCache: {
-			enabled: true,
-			maxAge: 5 * 60,
+			enabled: false,
 		},
 	},
 
@@ -210,40 +239,13 @@ export const auth = betterAuth({
 					}),
 				]
 			: []),
-		organization({
-			allowUserToCreateOrganization: false,
-			disableOrganizationDeletion: true,
-			creatorRole: "owner",
-
-			schema: {
-				organization: {
-					additionalFields: {
-						website: {
-							type: "string",
-							required: false,
-						},
-					},
-				},
-			},
-		}),
+		workspacePlugin,
 
 		sso({
 			organizationProvisioning: { disabled: true },
 		}),
 
-		apiKey({
-			apiKeyHeaders: API_KEY_HEADER,
-			defaultPrefix: API_KEY_PREFIX,
-			enableSessionForAPIKeys: true,
-			requireName: true,
-			defaultKeyLength: 32,
-			maximumNameLength: 64,
-			rateLimit: { enabled: false },
-			keyExpiration: {
-				maxExpiresIn: API_KEY_EXPIRATION.maxDays,
-				minExpiresIn: API_KEY_EXPIRATION.minDays,
-			},
-		}),
+		keyPlugin,
 	],
 
 	databaseHooks: {
@@ -258,24 +260,11 @@ export const auth = betterAuth({
 
 		user: {
 			create: {
-				before: async (user) => {
-					if (!hasSignInAllowList()) {
-						throw new APIError("FORBIDDEN", {
-							message:
-								'No one can sign in yet: set ALLOWED_SIGN_IN in .env to your email domain (for example ALLOWED_SIGN_IN="acme.com") and restart.',
-						});
-					}
-
-					if (!isWorkspaceEmail(user.email)) {
-						const domain = primaryWorkspaceDomain();
-						throw new APIError("FORBIDDEN", {
-							message: domain
-								? `This CRM is private. Sign in with your @${domain} account.`
-								: "This CRM is private. That address is not on the allow-list.",
-						});
-					}
-
-					return { data: user };
+				before: async () => {
+					throw new APIError("FORBIDDEN", {
+						message:
+							"El registro público está cerrado. Solicita una cuenta al administrador.",
+					});
 				},
 			},
 		},
@@ -283,10 +272,21 @@ export const auth = betterAuth({
 		session: {
 			create: {
 				before: async (session) => {
-					const workspaceId = await ensureWorkspaceMembership(session.userId);
+					const [user, role] = await Promise.all([
+						db.user.findUnique({
+							where: { id: session.userId },
+							select: { email: true },
+						}),
+						workspaceRoleOf(session.userId),
+					]);
+					if (!user || !role || !isWorkspaceEmail(user.email)) {
+						throw new APIError("FORBIDDEN", {
+							message: "Solicita acceso al administrador de esta instalación.",
+						});
+					}
 
 					return {
-						data: { ...session, activeOrganizationId: workspaceId ?? null },
+						data: { ...session, activeOrganizationId: WORKSPACE_ID },
 					};
 				},
 

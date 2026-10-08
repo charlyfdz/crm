@@ -1,4 +1,9 @@
-import { auth, needsMailboxGrant, type Session } from "@crm/auth";
+import {
+	auth,
+	needsMailboxGrant,
+	type Session,
+	workspaceRoleOf,
+} from "@crm/auth";
 import { db } from "@crm/db";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
@@ -12,7 +17,7 @@ export const getSession = cache(
 export async function requireSession(): Promise<Session> {
 	const session = await getSession();
 
-	if (!session) {
+	if (!session || !(await workspaceRoleOf(session.user.id))) {
 		redirect("/sign-in");
 	}
 

@@ -10,7 +10,6 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@crm/ui/components/tooltip";
-import { useQuery } from "@tanstack/react-query";
 import {
 	InlineDateField,
 	InlineField,
@@ -22,7 +21,8 @@ import {
 	useFieldsSheet,
 } from "@/components/crm/record-sheet/record-stack";
 import { DetailSheetProperty } from "@/components/detail-sheet";
-import { useTRPC } from "@/lib/trpc/client";
+import { useRecordReadOnly } from "../record-edit-scope";
+import { useRecordOwners, useRecordViewer } from "../use-record-viewer";
 
 type RecordFieldOption = { id: string; label: string };
 
@@ -40,10 +40,12 @@ const NONE = "__none__";
 
 const UNASSIGNED = "Unassigned";
 
-const FORMER_MEMBER = "Former member";
+const FORMER_MEMBER = "Usuario fuera de la lista activa";
 
 export function FieldsCog({ kind }: { kind: RecordKind }) {
 	const { open } = useFieldsSheet();
+	const { viewer } = useRecordViewer();
+	if (viewer?.role !== "owner" && viewer?.role !== "admin") return null;
 
 	return (
 		<Tooltip>
@@ -67,19 +69,19 @@ export function RecordFields({
 	saving: (key: string) => boolean;
 	onSave: (values: Record<string, FieldValueJson>) => void;
 }) {
-	const trpc = useTRPC();
-	const users = useQuery(trpc.users.list.queryOptions());
+	const locked = useRecordReadOnly();
+	const users = useRecordOwners(!locked);
 
 	const userOptionsFor = (value: string) => {
 		const options = [
 			{ value: NONE, label: UNASSIGNED },
-			...(users.data ?? []).map((user) => ({
+			...users.users.map((user) => ({
 				value: user.id,
 				label: user.name,
 			})),
 		];
 
-		if (users.data && !options.some((option) => option.value === value)) {
+		if (!options.some((option) => option.value === value)) {
 			options.push({ value, label: FORMER_MEMBER });
 		}
 
@@ -91,8 +93,9 @@ export function RecordFields({
 			{fields
 				.filter((field) => field.showOnSheet)
 				.map((field) => {
-					const save = (value: FieldValueJson) =>
-						onSave({ [field.key]: value });
+					const save = (value: FieldValueJson) => {
+						if (!locked) onSave({ [field.key]: value });
+					};
 					const busy = saving(field.key);
 
 					if (field.type === "CHECKBOX") {
@@ -100,7 +103,7 @@ export function RecordFields({
 							<DetailSheetProperty key={field.id} label={field.label}>
 								<Checkbox
 									checked={field.value === true}
-									disabled={busy}
+									disabled={busy || locked}
 									onCheckedChange={(checked) => save(checked === true)}
 								/>
 							</DetailSheetProperty>
@@ -160,6 +163,7 @@ export function RecordFields({
 								label={field.label}
 								value={current}
 								options={userOptionsFor(current)}
+								readOnly={locked || !users.ready}
 								placeholder={UNASSIGNED}
 								saving={busy}
 								onSave={(next) => save(next === NONE ? null : next)}

@@ -12,11 +12,13 @@ import {
 import { requireSession } from "@/lib/session";
 import { HydrateClient } from "@/lib/trpc/hydrate";
 import { getServerQueryClient, getServerTrpc } from "@/lib/trpc/server";
+import { IdentityAudit } from "./identity-audit";
+import { CreateMemberButton } from "./member-management";
 import { membersSearchParams } from "./members-search-params";
 import { MembersTable } from "./members-table";
 
 export const metadata: Metadata = {
-	title: "Members",
+	title: "Usuarios",
 };
 
 export default function MembersSettingsPage({
@@ -26,9 +28,9 @@ export default function MembersSettingsPage({
 		<PageShell className="min-h-0">
 			<PageShellHeader>
 				<PageShellHeading>
-					<PageShellTitle>Members</PageShellTitle>
+					<PageShellTitle>Usuarios</PageShellTitle>
 					<PageShellDescription>
-						Everyone who has access to your CRM.
+						Cuentas, suspensión y recuperación de acceso para esta empresa.
 					</PageShellDescription>
 				</PageShellHeading>
 			</PageShellHeader>
@@ -61,7 +63,9 @@ async function Members({
 
 	return (
 		<HydrateClient>
+			<CreateMemberButton />
 			<MembersTable />
+			<IdentityAudit />
 		</HydrateClient>
 	);
 }

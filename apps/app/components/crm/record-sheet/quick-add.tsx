@@ -2,22 +2,26 @@
 
 import { Button } from "@crm/ui/components/button";
 import { DatePicker } from "@crm/ui/components/date-picker";
-import { Field, FieldLabel } from "@crm/ui/components/field";
+import { Field, FieldGroup, FieldLabel } from "@crm/ui/components/field";
 import { Input } from "@crm/ui/components/input";
 import {
 	Select,
 	SelectContent,
+	SelectGroup,
 	SelectItem,
 	SelectTrigger,
 	SelectValue,
 } from "@crm/ui/components/select";
 import { Spinner } from "@crm/ui/components/spinner";
+import { parseDealAmount } from "@crm/validation/deal-money";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { toast } from "sonner";
 import { contactName } from "@/components/crm/contact-name";
+import { initialPipelineSelection } from "@/components/pipelines/pipeline-model";
 import { useCrmCache } from "@/lib/trpc/cache";
 import { useTRPC } from "@/lib/trpc/client";
+import { useRecordViewer } from "../use-record-viewer";
 
 function QuickAddForm({
 	submitLabel,
@@ -39,7 +43,7 @@ function QuickAddForm({
 			className="flex shrink-0 flex-col gap-4 border-b px-5 py-4"
 			action={onSubmit}
 		>
-			<div className="grid gap-4 sm:grid-cols-2">{children}</div>
+			<FieldGroup className="grid gap-4 sm:grid-cols-2">{children}</FieldGroup>
 			<div className="flex items-center justify-end gap-2">
 				<Button
 					type="button"
@@ -61,15 +65,17 @@ function QuickAddForm({
 
 export function QuickAddContact({
 	companyId,
-	ownerId,
 	onDone,
 }: {
 	companyId: string;
-	ownerId: string | null;
 	onDone: () => void;
 }) {
 	const trpc = useTRPC();
 	const cache = useCrmCache();
+	const { viewer } = useRecordViewer();
+	const canCreate = Boolean(
+		viewer && ["owner", "admin", "member"].includes(viewer.role),
+	);
 
 	const [firstName, setFirstName] = useState("");
 	const [lastName, setLastName] = useState("");
@@ -96,18 +102,18 @@ export function QuickAddContact({
 		<QuickAddForm
 			submitLabel="Add contact"
 			pending={create.isPending}
-			ready={firstName.trim() !== ""}
+			ready={firstName.trim() !== "" && canCreate}
 			onCancel={onDone}
-			onSubmit={() =>
+			onSubmit={() => {
+				if (!canCreate || create.isPending) return;
 				create.mutate({
 					firstName,
 					lastName: lastName || undefined,
 					email: email || undefined,
 					title: title || undefined,
 					companyId,
-					ownerId,
-				})
-			}
+				});
+			}}
 		>
 			<Field>
 				<FieldLabel htmlFor={firstNameId}>First name</FieldLabel>
@@ -256,13 +262,27 @@ export function QuickAddDeal({
 	const [name, setName] = useState("");
 	const [amount, setAmount] = useState("");
 	const [closeDate, setCloseDate] = useState("");
+	const [pipelineId, setPipelineId] = useState("");
+	const [currency, setCurrency] = useState("");
 
 	const nameId = useId();
 	const amountId = useId();
 	const closeId = useId();
+	const pipelineSelectId = useId();
+	const currencySelectId = useId();
 
 	const me = useQuery(trpc.users.me.queryOptions());
-	const owner = ownerId ?? me.data?.id ?? null;
+	const workspace = useQuery(trpc.workspace.get.queryOptions());
+	const pipelines = useQuery(trpc.pipelines.list.queryOptions());
+	const currencies = useQuery(trpc.currency.settings.queryOptions());
+	const role = workspace.data?.viewerRole;
+	const canCreate = role === "owner" || role === "admin" || role === "member";
+	const owner = role === "member" ? me.data?.id : (ownerId ?? me.data?.id);
+	const selection = initialPipelineSelection(
+		pipelines.data?.rows ?? [],
+		pipelineId || undefined,
+	);
+	const chosenCurrency = currency || currencies.data?.reportingCurrency;
 
 	const create = useMutation(
 		trpc.deals.create.mutationOptions({
@@ -276,25 +296,29 @@ export function QuickAddDeal({
 	);
 
 	const submit = () => {
-		if (!owner) {
-			toast.error("Could not work out who should own this deal.");
+		if (!owner || !canCreate || !selection || !chosenCurrency) {
+			toast.error(
+				"Carga los permisos, proceso y moneda antes de crear la oportunidad.",
+			);
 			return;
 		}
 
 		let amountCents: number | null = null;
-		if (amount.trim() !== "") {
-			const parsed = Number.parseFloat(amount);
-			if (!Number.isFinite(parsed) || parsed < 0) {
-				toast.error("Amount has to be a number.");
-				return;
-			}
-			amountCents = Math.round(parsed * 100);
+		try {
+			amountCents = parseDealAmount(amount);
+		} catch {
+			toast.error(
+				"Usa un importe válido con hasta dos decimales y sin separadores de miles.",
+			);
+			return;
 		}
 
 		create.mutate({
 			name,
 			companyId,
 			ownerId: owner,
+			...selection,
+			currency: chosenCurrency,
 			amountCents,
 			expectedCloseDate: closeDate || null,
 		});
@@ -302,9 +326,12 @@ export function QuickAddDeal({
 
 	return (
 		<QuickAddForm
-			submitLabel="Create deal"
+			submitLabel="Crear oportunidad"
 			pending={create.isPending}
-			ready={name.trim() !== ""}
+			ready={
+				name.trim() !== "" &&
+				Boolean(owner && canCreate && selection && chosenCurrency)
+			}
 			onCancel={onDone}
 			onSubmit={submit}
 		>
@@ -315,12 +342,14 @@ export function QuickAddDeal({
 					autoFocus
 					value={name}
 					onChange={(event) => setName(event.target.value)}
-					placeholder={`${companyName} — Comp AI`}
+					placeholder={`${companyName} — Servicio o proyecto`}
 					autoComplete="off"
 				/>
 			</Field>
 			<Field>
-				<FieldLabel htmlFor={amountId}>Amount</FieldLabel>
+				<FieldLabel htmlFor={amountId}>
+					Importe ({chosenCurrency ?? "cargando moneda"})
+				</FieldLabel>
 				<Input
 					id={amountId}
 					value={amount}
@@ -337,6 +366,51 @@ export function QuickAddDeal({
 					onChange={setCloseDate}
 					placeholder="No date yet"
 				/>
+			</Field>
+			<Field>
+				<FieldLabel htmlFor={pipelineSelectId}>Proceso comercial</FieldLabel>
+				<Select
+					value={selection?.pipelineId ?? ""}
+					onValueChange={setPipelineId}
+					disabled={!pipelines.isSuccess || create.isPending}
+				>
+					<SelectTrigger id={pipelineSelectId}>
+						<SelectValue placeholder="Selecciona un proceso activo" />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectGroup>
+							{(pipelines.data?.rows ?? []).map((pipeline) => (
+								<SelectItem key={pipeline.id} value={pipeline.id}>
+									{pipeline.name}
+									{pipeline.isDefault ? " · Predeterminado" : ""}
+								</SelectItem>
+							))}
+						</SelectGroup>
+					</SelectContent>
+				</Select>
+			</Field>
+			<Field>
+				<FieldLabel htmlFor={currencySelectId}>
+					Moneda de la oportunidad
+				</FieldLabel>
+				<Select
+					value={chosenCurrency ?? ""}
+					onValueChange={setCurrency}
+					disabled={!currencies.isSuccess || create.isPending}
+				>
+					<SelectTrigger id={currencySelectId}>
+						<SelectValue placeholder="Selecciona moneda" />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectGroup>
+							{(currencies.data?.catalog ?? []).map((entry) => (
+								<SelectItem key={entry.code} value={entry.code}>
+									{entry.code} · {entry.name}
+								</SelectItem>
+							))}
+						</SelectGroup>
+					</SelectContent>
+				</Select>
 			</Field>
 		</QuickAddForm>
 	);

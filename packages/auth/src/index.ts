@@ -1,3 +1,4 @@
+export { ACCESS } from "./access-config";
 export {
 	API_KEY_EXPIRATION,
 	API_KEY_HEADER,
@@ -14,6 +15,12 @@ export {
 	isSlackConfigured,
 } from "./env";
 export {
+	canManageMember,
+	identityManagerRole,
+	lockWorkspaceIdentity,
+	revokeUserAccess,
+} from "./identity";
+export {
 	canChangeRole,
 	canManageConnections,
 	canManageCurrency,
@@ -29,6 +36,11 @@ export {
 	type WorkspaceRole,
 	workspaceRoleOf,
 } from "./organization";
+export {
+	ProvisionDeniedError,
+	ProvisionError,
+	provisionUser,
+} from "./provision-user";
 export {
 	CALENDAR_SCOPE,
 	GMAIL_SCOPE,

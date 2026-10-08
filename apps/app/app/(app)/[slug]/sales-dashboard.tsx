@@ -9,15 +9,19 @@ import {
 import type { ChartConfig } from "@crm/ui/components/chart";
 import { DashboardRow, StatGroup } from "@crm/ui/components/dashboard";
 import { StatCard, type StatDelta } from "@crm/ui/components/stat-card";
-import {
-	formatCount,
-	formatMoney,
-	formatMoneyCompact,
-	formatPercent,
-} from "@crm/ui/lib/format";
+import { formatCount, formatPercent } from "@crm/ui/lib/format";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { AreaTrend, DonutStat } from "@/components/dashboard-charts";
+import {
+	formatDashboardMoney,
+	formatDashboardMoneyCompact,
+} from "@/lib/dashboard-money";
+import {
+	EMPTY_TREND_LABEL,
+	emptyPipelineLabel,
+	unconvertedLabel,
+} from "@/lib/dashboard-presentation";
 import { dealStageColor, dealStageLabel } from "@/lib/deal-stage";
 import type { RouterOutputs } from "@/lib/trpc/types";
 import { useWorkspaceUrl } from "@/lib/use-workspace-url";
@@ -57,9 +61,10 @@ export function SalesDashboard({ summary }: { summary: Summary }) {
 		unconverted,
 	} = summary;
 
-	const money = (cents: number) => formatMoneyCompact(cents, reportingCurrency);
+	const money = (cents: number) =>
+		formatDashboardMoneyCompact(cents, reportingCurrency);
 	const exact = (value: number | string) =>
-		formatMoney(Number(value), reportingCurrency);
+		formatDashboardMoney(Number(value), reportingCurrency);
 
 	const hasTrend = trend.some((point) => point.won > 0 || point.created > 0);
 
@@ -125,17 +130,13 @@ export function SalesDashboard({ summary }: { summary: Summary }) {
 
 			{unconverted.count > 0 ? (
 				<p className="text-muted-foreground text-xs">
-					Every figure above is in {reportingCurrency}.{" "}
-					{formatCount(unconverted.count, "deal")} in{" "}
-					{unconverted.currencies.join(", ")}{" "}
-					{unconverted.count === 1 ? "is" : "are"} not included — there is no
-					rate to convert {unconverted.currencies.length === 1 ? "it" : "them"}{" "}
-					with.{" "}
+					Los importes se expresan en {reportingCurrency}.{" "}
+					{unconvertedLabel(unconverted.count, unconverted.currencies)}{" "}
 					<Link
 						href={workspaceUrl("/settings/currencies")}
 						className="underline hover:no-underline"
 					>
-						Set one
+						Revisar moneda y tasas
 					</Link>
 					.
 				</p>
@@ -160,13 +161,13 @@ export function SalesDashboard({ summary }: { summary: Summary }) {
 							/>
 						</div>
 					) : (
-						<EmptyChart label="No deals closed or created yet" />
+						<EmptyChart label={EMPTY_TREND_LABEL} />
 					)}
 				</ChartPanel>
 
 				<ChartPanel
-					title="Open pipeline by stage"
-					description="Where the value sits right now"
+					title="Valor abierto por clasificación"
+					description="Clasificación de resultados; no representa las etapas personalizadas"
 				>
 					{stageSlices.length > 0 ? (
 						<div className="flex flex-1 flex-col justify-between gap-1 pt-4">
@@ -204,7 +205,7 @@ export function SalesDashboard({ summary }: { summary: Summary }) {
 							</ul>
 						</div>
 					) : (
-						<EmptyChart label="Nothing open" />
+						<EmptyChart label={emptyPipelineLabel(pipeline.totalDeals)} />
 					)}
 				</ChartPanel>
 			</DashboardRow>

@@ -1,3 +1,24 @@
+# CRM Corporativo — desarrollo propio
+
+CRM interno instalable por empresa. Corporativo S&F es el primer piloto.
+Esta copia conserva la licencia MIT y documentación histórica del proyecto base.
+No es un SaaS. Cada instalación mantiene datos, configuración y operación independientes.
+
+La versión completa y la aceptación empresarial siguen pendientes. No existe instalación autorizada en homelab.
+Coolify en `paas-control` es el destino futuro, no una instalación realizada.
+
+Consulte el [contrato](PROJECT-CHARTER.md), el [piloto](docs/product/PILOT-CORPORATIVO-SF.md) y la [guía de uso](docs/delivery/GUIA-USUARIO.md).
+La [evidencia comercial](docs/verification/2026-10-02-business-flow.md) registra procesos, tareas, reportes y pruebas aisladas.
+La [evidencia de autorización](docs/verification/2026-10-03-opportunity-authorization.md) registra los controles actuales de oportunidades y regresiones.
+La [evidencia de identidad](docs/verification/2026-10-03-managed-identity.md) registra usuarios administrados, revocación y controles HTTP de configuración.
+La [evidencia de empresas y contactos](docs/verification/2026-10-04-company-contact-authorization.md) registra permisos, relaciones y colas transaccionales.
+La [evidencia anterior](docs/verification/2026-10-02-local-foundations.md) conserva las pruebas de fundamentos.
+Los resultados de estos recibos no se suman: existen pruebas repetidas.
+
+## Documentación histórica del proyecto base
+
+El contenido siguiente describe el proyecto original. Sus promesas no acreditan aceptación de esta versión propia.
+
 <p align="center">
   <a href="https://link.context.dev/crm">
     <picture>

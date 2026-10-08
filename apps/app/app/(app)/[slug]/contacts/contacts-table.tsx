@@ -291,6 +291,7 @@ export function ContactsTable() {
 				actions: (
 					<ContactsBulkActions
 						ids={settledIds}
+						rows={rows}
 						onDone={selection.clear}
 						archived={input.archived}
 					/>

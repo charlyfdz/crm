@@ -1,4 +1,5 @@
 import type { Db, Prisma } from "@crm/db";
+import { isAiEnabled } from "@crm/env/features";
 import { Injectable } from "@nestjs/common";
 import { InjectDatabase } from "../database/database.constants";
 
@@ -7,6 +8,7 @@ export class AgentQueueService {
 	constructor(@InjectDatabase() private readonly db: Db) {}
 
 	async queuedCompanies(ids: readonly string[]): Promise<Set<string>> {
+		if (!isAiEnabled()) return new Set();
 		if (ids.length === 0) return new Set();
 
 		const rows = await this.db.agentTask.findMany({
@@ -19,6 +21,7 @@ export class AgentQueueService {
 	}
 
 	async queuedContacts(ids: readonly string[]): Promise<Set<string>> {
+		if (!isAiEnabled()) return new Set();
 		if (ids.length === 0) return new Set();
 
 		const rows = await this.db.agentTask.findMany({
@@ -34,6 +37,7 @@ export class AgentQueueService {
 		companyId?: string;
 		contactId?: string;
 	}): Promise<boolean> {
+		if (!isAiEnabled()) return false;
 		const row = await this.db.agentTask.findFirst({
 			where: this.due({
 				companyId: subject.companyId,

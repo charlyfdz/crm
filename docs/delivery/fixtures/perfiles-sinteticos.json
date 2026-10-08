@@ -1,0 +1,46 @@
+{
+  "purpose": "ficha documental de ensayo; no importador ni configuración ejecutable",
+  "synthetic": true,
+  "profiles": [
+    {
+      "id": "demo-entrega-a",
+      "company": "Demo Empresa A",
+      "workspaceSlug": "demo-empresa-a",
+      "website": "empresa-a.example.test",
+      "databaseLabel": "crm_delivery_a_test",
+      "fileRootLabel": "private_files_demo_a",
+      "backupLabel": "private_backup_demo_a",
+      "secretCustodyLabel": "custody_demo_a",
+      "users": [
+        { "id": "user-a-owner", "email": "owner@empresa-a.example.test", "role": "owner" },
+        { "id": "user-a-admin", "email": "admin@empresa-a.example.test", "role": "admin" },
+        { "id": "user-a-member", "email": "member@empresa-a.example.test", "role": "member" }
+      ],
+      "aiEnabled": false,
+      "telemetryEnabled": false,
+      "externalAccounts": [],
+      "acceptance": null,
+      "installationAuthorization": null
+    },
+    {
+      "id": "demo-entrega-b",
+      "company": "Demo Empresa B",
+      "workspaceSlug": "demo-empresa-b",
+      "website": "empresa-b.example.test",
+      "databaseLabel": "crm_delivery_b_test",
+      "fileRootLabel": "private_files_demo_b",
+      "backupLabel": "private_backup_demo_b",
+      "secretCustodyLabel": "custody_demo_b",
+      "users": [
+        { "id": "user-b-owner", "email": "owner@empresa-b.example.test", "role": "owner" },
+        { "id": "user-b-admin", "email": "admin@empresa-b.example.test", "role": "admin" },
+        { "id": "user-b-member", "email": "member@empresa-b.example.test", "role": "member" }
+      ],
+      "aiEnabled": false,
+      "telemetryEnabled": false,
+      "externalAccounts": [],
+      "acceptance": null,
+      "installationAuthorization": null
+    }
+  ]
+}

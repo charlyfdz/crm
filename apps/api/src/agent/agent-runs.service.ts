@@ -18,6 +18,7 @@ import type {
 	AgentRetryRunInput,
 	AgentRunNowInput,
 } from "./agents.contracts";
+import { requireApiAiEnabled } from "./ai-policy";
 
 const CANCELLABLE_STATUSES: readonly AgentRunStatus[] = [
 	"QUEUED",
@@ -146,6 +147,7 @@ export class AgentRunsService {
 	}
 
 	async runNow(input: AgentRunNowInput, userId: string) {
+		requireApiAiEnabled();
 		await this.access.assertMember(userId);
 		const existing = await this.db.agentRun.findUnique({
 			where: { idempotencyKey: input.clientRequestId },
@@ -239,6 +241,7 @@ export class AgentRunsService {
 	}
 
 	async retryRun(input: AgentRetryRunInput, userId: string) {
+		requireApiAiEnabled();
 		await this.access.assertMember(userId);
 
 		const run = await this.db.$transaction(async (tx) => {

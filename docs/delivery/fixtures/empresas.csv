@@ -1,0 +1,4 @@
+source_id,name,domain,owner_fixture_id
+A-001,Demo Consultoría Alba,alba.example.test,user-a-member
+A-002,"Demo Contable Bruma, Taller",bruma.example.test,user-a-member
+A-003,Demo Tecnología Cauce,,user-a-admin

@@ -6,6 +6,10 @@ import { ConversionService } from "../src/currency/conversion.service";
 import { DealsService } from "../src/deals/deals.service";
 import { FieldsService } from "../src/fields/fields.service";
 import { withDiscardedCrmEvents } from "./agent-trigger.stub";
+import {
+	addFixtureMember,
+	closeFixtureClient,
+} from "./disposable-deal-regression";
 
 const suffix = process.env.TEST_RUN_ID ?? "deal-contacts-spec";
 const userId = `user-${suffix}`;
@@ -52,6 +56,7 @@ beforeAll(async () => {
 			emailVerified: true,
 		},
 	});
+	await addFixtureMember(db, userId);
 
 	const company = await db.company.create({
 		data: { name: `People Co ${suffix}`, domain },
@@ -82,19 +87,25 @@ beforeAll(async () => {
 	});
 	outsiderId = outsider.id;
 
-	const deal = await deals.create({
-		name: `Renewal ${suffix}`,
-		companyId,
-		ownerId: userId,
-	});
+	const deal = await deals.create(
+		{
+			name: `Renewal ${suffix}`,
+			companyId,
+			ownerId: userId,
+		},
+		userId,
+	);
 	dealId = deal.id;
 });
 
-afterAll(clean);
+afterAll(async () => {
+	await clean();
+	await closeFixtureClient();
+});
 
 describe("bringing a contact onto a deal", () => {
 	it("offers the people at the deal's company and nobody else", async () => {
-		const options = await deals.contactOptions(dealId);
+		const options = await deals.contactOptions(dealId, userId);
 		const ids = options.map((option) => option.id);
 
 		expect(ids).toContain(championId);
@@ -103,13 +114,16 @@ describe("bringing a contact onto a deal", () => {
 	});
 
 	it("attaches with a role and reads back on the deal", async () => {
-		await deals.attachContact({
-			dealId,
-			contactId: championId,
-			role: "Champion",
-		});
+		await deals.attachContact(
+			{
+				dealId,
+				contactId: championId,
+				role: "Champion",
+			},
+			userId,
+		);
 
-		const deal = await deals.byId(dealId);
+		const deal = await deals.byId(dealId, userId);
 
 		expect(deal.contacts).toHaveLength(1);
 		expect(deal.contacts[0]?.id).toBe(championId);
@@ -117,15 +131,15 @@ describe("bringing a contact onto a deal", () => {
 	});
 
 	it("stops offering somebody already on it", async () => {
-		const options = await deals.contactOptions(dealId);
+		const options = await deals.contactOptions(dealId, userId);
 
 		expect(options.map((option) => option.id)).not.toContain(championId);
 	});
 
 	it("attaching twice keeps the role it already has", async () => {
-		await deals.attachContact({ dealId, contactId: championId });
+		await deals.attachContact({ dealId, contactId: championId }, userId);
 
-		const deal = await deals.byId(dealId);
+		const deal = await deals.byId(dealId, userId);
 
 		expect(deal.contacts).toHaveLength(1);
 		expect(deal.contacts[0]?.role).toBe("Champion");
@@ -133,32 +147,38 @@ describe("bringing a contact onto a deal", () => {
 
 	it("refuses somebody who works somewhere else", async () => {
 		await expect(
-			deals.attachContact({ dealId, contactId: outsiderId }),
-		).rejects.toThrow(`That contact does not work at People Co ${suffix}.`);
+			deals.attachContact({ dealId, contactId: outsiderId }, userId),
+		).rejects.toThrow("misma empresa");
 	});
 
 	it("blanks a role rather than storing an empty string", async () => {
-		await deals.setContactRole({ dealId, contactId: championId, role: "  " });
+		await deals.setContactRole(
+			{ dealId, contactId: championId, role: "  " },
+			userId,
+		);
 
-		const deal = await deals.byId(dealId);
+		const deal = await deals.byId(dealId, userId);
 
 		expect(deal.contacts[0]?.role).toBeNull();
 	});
 
 	it("will not set a role on somebody who is not on the deal", async () => {
 		await expect(
-			deals.setContactRole({
-				dealId,
-				contactId: colleagueId,
-				role: "Blocker",
-			}),
+			deals.setContactRole(
+				{
+					dealId,
+					contactId: colleagueId,
+					role: "Blocker",
+				},
+				userId,
+			),
 		).rejects.toThrow("That contact is not on this deal.");
 	});
 
 	it("takes them off again, leaving the contact in the CRM", async () => {
-		await deals.detachContact({ dealId, contactId: championId });
+		await deals.detachContact({ dealId, contactId: championId }, userId);
 
-		const deal = await deals.byId(dealId);
+		const deal = await deals.byId(dealId, userId);
 
 		expect(deal.contacts).toHaveLength(0);
 		expect(await db.contact.count({ where: { id: championId } })).toBe(1);
@@ -166,7 +186,7 @@ describe("bringing a contact onto a deal", () => {
 
 	it("says so when they were never on it", async () => {
 		await expect(
-			deals.detachContact({ dealId, contactId: championId }),
+			deals.detachContact({ dealId, contactId: championId }, userId),
 		).rejects.toThrow("That contact is not on this deal.");
 	});
 });

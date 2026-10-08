@@ -25,6 +25,7 @@ export type CrmCache = {
 	company(id?: string, options?: Options): Promise<void>;
 	contact(id?: string, options?: Options): Promise<void>;
 	deal(id?: string, options?: Options): Promise<void>;
+	pipelines(options?: Options): Promise<void>;
 	fields(entity?: RecordKind, options?: Options): Promise<void>;
 	fieldCoverage(id?: string, options?: Options): Promise<void>;
 	savedViews(entity?: RecordKind, options?: Options): Promise<void>;
@@ -199,7 +200,12 @@ export function useCrmCache(): CrmCache {
 
 		deal: (id, options) =>
 			run(
-				[id ? trpc.deals.byId.queryKey({ id }) : trpc.deals.byId.queryKey()],
+				[
+					id ? trpc.deals.byId.queryKey({ id }) : trpc.deals.byId.queryKey(),
+					id
+						? trpc.deals.stageHistory.queryKey({ id })
+						: trpc.deals.stageHistory.queryKey(),
+				],
 				[
 					...listKeys(),
 					trpc.deals.contactOptions.queryKey(),
@@ -208,6 +214,18 @@ export function useCrmCache(): CrmCache {
 					...activityKeys(),
 					trpc.dashboard.summary.queryKey(),
 					trpc.currency.settings.queryKey(),
+				],
+				options,
+			),
+
+		pipelines: (options) =>
+			run(
+				[trpc.pipelines.list.queryKey()],
+				[
+					trpc.deals.list.queryKey(),
+					trpc.deals.byId.queryKey(),
+					trpc.deals.stageHistory.queryKey(),
+					trpc.dashboard.summary.queryKey(),
 				],
 				options,
 			),
@@ -296,7 +314,12 @@ export function useCrmCache(): CrmCache {
 
 		workspace: (options) =>
 			run(
-				[trpc.workspace.get.queryKey(), trpc.workspace.members.queryKey()],
+				[
+					trpc.workspace.get.queryKey(),
+					trpc.workspace.members.queryKey(),
+					trpc.workspace.identityAudit.queryKey(),
+					trpc.apiKeys.list.pathKey(),
+				],
 				[],
 				options,
 			),

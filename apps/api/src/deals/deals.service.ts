@@ -15,6 +15,8 @@ import {
 import type { FieldDefinitionWithOptions } from "@crm/db/fields";
 import {
 	BadRequestException,
+	ConflictException,
+	ForbiddenException,
 	Injectable,
 	Logger,
 	NotFoundException,
@@ -25,7 +27,7 @@ import {
 	ActivityStampService,
 	type StampTargets,
 } from "../crm/activity-stamp.service";
-import { type BulkResult, requireOwner, runBulk } from "../crm/bulk";
+import { type BulkResult, runBulk } from "../crm/bulk";
 import {
 	blankToNull,
 	decimalFromCents,
@@ -35,6 +37,7 @@ import {
 import { ConversionService } from "../currency/conversion.service";
 import { InjectDatabase } from "../database/database.constants";
 import { FieldsService } from "../fields/fields.service";
+import { PipelinesService } from "../pipelines/pipelines.service";
 import {
 	archivedFilter,
 	countsByKey,
@@ -90,7 +93,12 @@ const LOSING = new Set<DealStage>(LOSING_DEAL_STAGES);
 const SORTABLE: OrderByColumns<Prisma.DealOrderByWithRelationInput[]> = {
 	name: (dir) => [{ name: dir }],
 	company: (dir) => [{ company: { name: dir } }, { name: "asc" }],
-	stage: (dir) => [{ stage: dir }, { expectedCloseDate: "asc" }],
+	stage: (dir) => [
+		{ pipelineStage: { pipeline: { name: dir } } },
+		{ pipelineStage: { position: dir } },
+		{ expectedCloseDate: "asc" },
+		{ id: "asc" },
+	],
 	amount: (dir) => [{ baseAmount: { sort: dir, nulls: "last" } }],
 	expectedCloseDate: (dir) => [{ expectedCloseDate: dir }],
 	createdAt: (dir) => [{ createdAt: dir }],
@@ -109,9 +117,11 @@ export class DealsService {
 		private readonly stamp: ActivityStampService,
 		private readonly conversion: ConversionService,
 		private readonly fields: FieldsService,
+		private readonly pipelines: PipelinesService = new PipelinesService(db),
 	) {}
 
-	async list(input: DealListInput) {
+	async list(input: DealListInput, actingUserId?: string) {
+		await this.membership(actingUserId);
 		const filterableFields = await this.fields.filterableFieldsFor("DEAL");
 		const where = this.buildWhere(input, filterableFields);
 		const { skip, take } = paginate(input);
@@ -130,6 +140,17 @@ export class DealsService {
 						id: true,
 						name: true,
 						stage: true,
+						pipelineStage: {
+							select: {
+								id: true,
+								name: true,
+								position: true,
+								outcome: true,
+								legacyStage: true,
+								pipelineId: true,
+								pipeline: { select: { id: true, name: true } },
+							},
+						},
 						amount: true,
 						currency: true,
 						baseAmount: true,
@@ -191,7 +212,8 @@ export class DealsService {
 		};
 	}
 
-	async byId(id: string) {
+	async byId(id: string, actingUserId?: string) {
+		await this.membership(actingUserId);
 		const deal = await this.db.deal.findUnique({
 			where: { id },
 			select: {
@@ -199,6 +221,17 @@ export class DealsService {
 				name: true,
 				description: true,
 				stage: true,
+				pipelineStage: {
+					select: {
+						id: true,
+						name: true,
+						position: true,
+						outcome: true,
+						legacyStage: true,
+						pipelineId: true,
+						pipeline: { select: { id: true, name: true } },
+					},
+				},
 				stageChangedAt: true,
 				amount: true,
 				currency: true,
@@ -250,9 +283,14 @@ export class DealsService {
 		};
 	}
 
-	async create(input: DealCreateInput) {
-		const stage = input.stage ?? "DEMO_BOOKED";
-		const closed = isClosedStage(stage);
+	async create(input: DealCreateInput, actingUserId?: string) {
+		if (!actingUserId)
+			throw new ForbiddenException("La identidad del usuario es obligatoria.");
+		const role = await this.pipelines.membership(actingUserId);
+		if (input.ownerId !== actingUserId && !["owner", "admin"].includes(role))
+			throw new ForbiddenException(
+				"Sólo administración asigna oportunidades a otra persona.",
+			);
 		const now = new Date();
 
 		const currency = normalizeCurrency(
@@ -265,14 +303,39 @@ export class DealsService {
 
 		try {
 			const deal = await this.agent.withCrmEvents(async (tx, emit) => {
+				const currentRole = await this.pipelines.membership(actingUserId, tx);
+				if (
+					input.ownerId !== actingUserId &&
+					!["owner", "admin"].includes(currentRole)
+				)
+					throw new ForbiddenException(
+						"Sólo administración asigna oportunidades a otra persona.",
+					);
+				await this.pipelines.membership(input.ownerId, tx);
+				const company = await tx.company.findFirst({
+					where: { id: input.companyId, archivedAt: null },
+					select: { id: true },
+				});
+				if (!company)
+					throw new BadRequestException(
+						"La empresa no existe o está archivada.",
+					);
+				const target = await this.pipelines.resolveStage(tx, input);
+				const stage = target.legacyStage;
+				const closed = target.outcome !== "OPEN";
+				const closedReason = input.closedReason?.trim() || null;
+				if (["LOST", "DISQUALIFIED"].includes(target.outcome) && !closedReason)
+					throw new BadRequestException("Indica el motivo del cierre.");
 				const created = await tx.deal.create({
 					data: {
 						name: input.name.trim(),
 						companyId: input.companyId,
 						ownerId: input.ownerId,
 						stage,
+						pipelineStageId: target.id,
 						stageChangedAt: now,
 						closedAt: closed ? now : null,
+						closedReason: closed ? closedReason : null,
 						amount: fromCents(input.amountCents),
 						currency,
 						...fx,
@@ -280,6 +343,20 @@ export class DealsService {
 					},
 					select: { id: true, name: true, companyId: true },
 				});
+				await this.recordStageChange(
+					tx,
+					{
+						id: created.id,
+						companyId: created.companyId,
+						ownerId: input.ownerId,
+						name: created.name,
+					},
+					null,
+					target,
+					actingUserId,
+					closedReason,
+					now,
+				);
 				await emit({
 					type: "deal.created",
 					record: { kind: "deal", id: created.id },
@@ -297,7 +374,7 @@ export class DealsService {
 				return created;
 			});
 
-			this.logger.log({ message: "Deal created", dealId: deal.id, stage });
+			this.logger.log({ message: "Deal created", dealId: deal.id });
 
 			void this.fields.queueBackfillForNewRecord("DEAL", deal.id);
 
@@ -307,8 +384,11 @@ export class DealsService {
 		}
 	}
 
-	async update(id: string, input: DealUpdateInput) {
+	async update(id: string, input: DealUpdateInput, actingUserId?: string) {
 		const data: Prisma.DealUpdateInput = {};
+		let moneySnapshot:
+			| { amount: Prisma.Decimal | null; currency: string }
+			| undefined;
 
 		if (input.name !== undefined) data.name = input.name.trim();
 		if (input.description !== undefined) {
@@ -332,14 +412,22 @@ export class DealsService {
 		}
 
 		if (input.amountCents !== undefined || input.currency !== undefined) {
+			const role = await this.membership(actingUserId);
 			const current = await this.db.deal.findUnique({
 				where: { id },
-				select: { amount: true, currency: true },
+				select: {
+					amount: true,
+					currency: true,
+					ownerId: true,
+					archivedAt: true,
+				},
 			});
 
 			if (!current) {
 				throw new NotFoundException(`No deal with id ${id}.`);
 			}
+			this.assertEditable(current, role, actingUserId);
+			moneySnapshot = current;
 
 			const amount =
 				input.amountCents !== undefined
@@ -355,6 +443,55 @@ export class DealsService {
 
 		try {
 			return await this.db.$transaction(async (tx) => {
+				const { deal, role } = await this.authorizedDeal(
+					tx,
+					id,
+					actingUserId,
+					"edit",
+				);
+				if (input.ownerId !== undefined) {
+					if (
+						input.ownerId !== deal.ownerId &&
+						!["owner", "admin"].includes(role)
+					)
+						throw new ForbiddenException(
+							"Sólo administración puede reasignar oportunidades.",
+						);
+					await this.membership(input.ownerId, tx);
+				}
+				if (input.companyId !== undefined) {
+					const [company] = await tx.$queryRaw<
+						Array<{ archivedAt: Date | null }>
+					>`
+						SELECT "archivedAt" FROM company WHERE id = ${input.companyId} FOR SHARE
+					`;
+					if (!company || company.archivedAt)
+						throw new BadRequestException("Selecciona una empresa activa.");
+					const linked = await tx.$queryRaw<
+						Array<{ companyId: string | null }>
+					>`
+						SELECT c."companyId" FROM contact c
+						JOIN "dealContact" dc ON dc."contactId" = c.id
+						WHERE dc."dealId" = ${id} FOR SHARE OF c
+					`;
+					if (linked.some((contact) => contact.companyId !== input.companyId))
+						throw new BadRequestException(
+							"Desvincula los contactos incompatibles antes de cambiar la empresa.",
+						);
+				}
+				if (moneySnapshot) {
+					const current = await tx.deal.findUniqueOrThrow({
+						where: { id },
+						select: { amount: true, currency: true },
+					});
+					if (
+						current.amount?.toString() !== moneySnapshot.amount?.toString() ||
+						current.currency !== moneySnapshot.currency
+					)
+						throw new ConflictException(
+							"El importe cambió durante la edición. Recarga y vuelve a intentarlo.",
+						);
+				}
 				if (input.fields) {
 					await this.fields.applyValues(tx, "DEAL", id, input.fields);
 				}
@@ -370,12 +507,23 @@ export class DealsService {
 		}
 	}
 
-	async archive(id: string): Promise<{ id: string; name: string }> {
+	async archive(
+		id: string,
+		actingUserId?: string,
+	): Promise<{ id: string; name: string }> {
 		try {
-			const deal = await this.db.deal.update({
-				where: { id },
-				data: { archivedAt: new Date() },
-				select: { name: true },
+			const deal = await this.db.$transaction(async (tx) => {
+				const { deal } = await this.authorizedDeal(
+					tx,
+					id,
+					actingUserId,
+					"archive",
+				);
+				return tx.deal.update({
+					where: { id },
+					data: { archivedAt: deal.archivedAt ?? new Date() },
+					select: { name: true },
+				});
 			});
 
 			this.logger.log({ message: "Deal archived", dealId: id });
@@ -386,12 +534,18 @@ export class DealsService {
 		}
 	}
 
-	async restore(id: string): Promise<{ id: string; name: string }> {
+	async restore(
+		id: string,
+		actingUserId?: string,
+	): Promise<{ id: string; name: string }> {
 		try {
-			const deal = await this.db.deal.update({
-				where: { id },
-				data: { archivedAt: null },
-				select: { name: true },
+			const deal = await this.db.$transaction(async (tx) => {
+				await this.authorizedDeal(tx, id, actingUserId, "restore");
+				return tx.deal.update({
+					where: { id },
+					data: { archivedAt: null },
+					select: { name: true },
+				});
 			});
 
 			this.logger.log({ message: "Deal restored", dealId: id });
@@ -402,19 +556,25 @@ export class DealsService {
 		}
 	}
 
-	async purge(id: string): Promise<{ id: string; name: string }>;
 	async purge(
 		id: string,
-		guard: { archivedBefore: Date },
-	): Promise<{ id: string; name: string } | null>;
-	async purge(
+		actingUserId?: string,
+	): Promise<{ id: string; name: string }> {
+		const deleted = await this.purgeRecord(id, undefined, actingUserId);
+		if (!deleted) throw new NotFoundException(`No deal with id ${id}.`);
+		return deleted;
+	}
+
+	private async purgeRecord(
 		id: string,
 		guard?: { archivedBefore: Date },
+		actingUserId?: string,
 	): Promise<{ id: string; name: string } | null> {
 		let deleted: { targets: StampTargets; name: string } | null;
 
 		try {
 			deleted = await this.db.$transaction(async (tx) => {
+				if (!guard) await this.authorizedDeal(tx, id, actingUserId, "purge");
 				const [row] = await tx.$queryRaw<Array<{ archivedAt: Date | null }>>`
 					SELECT "archivedAt" FROM deal WHERE id = ${id} FOR UPDATE
 				`;
@@ -466,28 +626,48 @@ export class DealsService {
 
 		return runBulk(
 			expired.map((row) => row.id),
-			(id) => this.purge(id, { archivedBefore: before }),
+			(id) => this.purgeRecord(id, { archivedBefore: before }),
 		);
 	}
 
 	async setStage(input: SetStageInput, actingUserId: string) {
 		const closedReason = input.closedReason?.trim();
-		const closed = isClosedStage(input.stage);
+		if (!input.stage && !input.pipelineStageId)
+			throw new BadRequestException("Selecciona la nueva etapa.");
 		const transition = await this.agent.withCrmEvents(async (tx, emit) => {
-			const [deal] = await tx.$queryRaw<
-				Array<{ id: string; stage: DealStage; companyId: string }>
-			>`
-				SELECT id, stage, "companyId"
+			const role = await this.pipelines.membership(actingUserId, tx);
+			const locked = await tx.$queryRaw<Array<{ id: string }>>`
+				SELECT id
 				FROM deal
 				WHERE id = ${input.id}
 				FOR UPDATE
 			`;
+			const deal = locked.length
+				? await tx.deal.findUnique({
+						where: { id: input.id },
+						include: { pipelineStage: { include: { pipeline: true } } },
+					})
+				: null;
 
 			if (!deal) {
 				throw new NotFoundException(`No deal with id ${input.id}.`);
 			}
+			if (deal.archivedAt)
+				throw new BadRequestException(
+					"Restaura la oportunidad antes de cambiarla.",
+				);
+			if (deal.ownerId !== actingUserId && !["owner", "admin"].includes(role))
+				throw new ForbiddenException(
+					"No tienes permiso para cambiar esta oportunidad.",
+				);
+			const target = await this.pipelines.resolveStage(
+				tx,
+				input,
+				input.pipelineId ? undefined : deal.pipelineStage?.pipelineId,
+			);
+			const closed = target.outcome !== "OPEN";
 
-			if (deal.stage === input.stage) {
+			if (deal.pipelineStageId === target.id) {
 				return {
 					changed: false as const,
 					deal,
@@ -495,7 +675,7 @@ export class DealsService {
 					now: null,
 				};
 			}
-			if (LOSING.has(input.stage) && !closedReason) {
+			if (["LOST", "DISQUALIFIED"].includes(target.outcome) && !closedReason) {
 				throw new BadRequestException(
 					"Say why it was lost — a closed-lost deal with no reason teaches nobody anything.",
 				);
@@ -505,13 +685,23 @@ export class DealsService {
 			const updated = await tx.deal.update({
 				where: { id: input.id },
 				data: {
-					stage: input.stage,
+					stage: target.legacyStage,
+					pipelineStageId: target.id,
 					stageChangedAt: now,
 					closedAt: closed ? now : null,
 					closedReason: closed ? (closedReason ?? null) : null,
 				},
 				select: { id: true, stage: true },
 			});
+			await this.recordStageChange(
+				tx,
+				deal,
+				deal.pipelineStage,
+				target,
+				actingUserId,
+				closedReason ?? null,
+				now,
+			);
 			await tx.activity.create({
 				data: {
 					type: ActivityType.STAGE_CHANGE,
@@ -521,14 +711,25 @@ export class DealsService {
 					companyId: deal.companyId,
 					dealId: deal.id,
 					createdById: actingUserId,
-					meta: { from: deal.stage, to: input.stage },
+					meta: {
+						from: deal.stage,
+						to: target.legacyStage,
+						fromStageId: deal.pipelineStageId,
+						toStageId: target.id,
+						fromStageName: deal.pipelineStage?.name ?? null,
+						toStageName: target.name,
+					},
 				},
 			});
 			await emit({
 				type: "deal.stage.changed",
 				record: { kind: "deal", id: deal.id },
 				occurredAt: now,
-				data: { companyId: deal.companyId, from: deal.stage, to: input.stage },
+				data: {
+					companyId: deal.companyId,
+					from: deal.stage,
+					to: target.legacyStage,
+				},
 			});
 			if (!isClosedStage(deal.stage) && closed) {
 				await emit({
@@ -538,7 +739,7 @@ export class DealsService {
 					data: {
 						companyId: deal.companyId,
 						from: deal.stage,
-						to: input.stage,
+						to: target.legacyStage,
 					},
 				});
 			}
@@ -550,7 +751,7 @@ export class DealsService {
 					data: {
 						companyId: deal.companyId,
 						from: deal.stage,
-						to: input.stage,
+						to: target.legacyStage,
 					},
 				});
 			}
@@ -564,19 +765,113 @@ export class DealsService {
 
 		const { deal, updated, now } = transition;
 
-		await this.stamp.touch({ companyId: deal.companyId, dealId: deal.id }, now);
+		try {
+			await this.stamp.touch(
+				{ companyId: deal.companyId, dealId: deal.id },
+				now,
+			);
+		} catch (error) {
+			this.logger.error(
+				{
+					message: "Deal stage saved but activity stamps need repair",
+					dealId: deal.id,
+				},
+				error instanceof Error ? error.stack : String(error),
+			);
+		}
 
 		this.logger.log({
 			message: "Deal stage changed",
 			dealId: deal.id,
 			from: deal.stage,
-			to: input.stage,
+			to: updated.stage,
 		});
 
 		return { ...updated, changed: true };
 	}
 
-	async contactOptions(dealId: string) {
+	async stageHistory(id: string, actingUserId: string) {
+		await this.pipelines.membership(actingUserId);
+		const deal = await this.db.deal.findUnique({
+			where: { id },
+			select: { id: true },
+		});
+		if (!deal) throw new NotFoundException("No existe la oportunidad.");
+		const changes = await this.db.dealStageChange.findMany({
+			where: { dealId: id },
+			orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
+		});
+		return changes.map(({ occurredAt, ...change }) => ({
+			...change,
+			occurredAt: occurredAt.toISOString(),
+		}));
+	}
+
+	private async recordStageChange(
+		tx: Prisma.TransactionClient,
+		deal: { id: string; companyId: string; ownerId: string; name: string },
+		from: {
+			id: string;
+			name: string;
+			outcome: string;
+			pipeline: { id: string; name: string };
+		} | null,
+		to: {
+			id: string;
+			name: string;
+			outcome: string;
+			pipeline: { id: string; name: string };
+		},
+		actorId: string,
+		reason: string | null,
+		occurredAt: Date,
+	) {
+		const change = await tx.dealStageChange.create({
+			data: {
+				dealId: deal.id,
+				actorId,
+				occurredAt,
+				reason,
+				fromStageId: from?.id ?? null,
+				fromStageName: from?.name ?? null,
+				fromOutcome:
+					from?.outcome as Prisma.DealStageChangeCreateInput["fromOutcome"],
+				fromPipelineId: from?.pipeline.id ?? null,
+				fromPipelineName: from?.pipeline.name ?? null,
+				toStageId: to.id,
+				toStageName: to.name,
+				toOutcome: to.outcome as Prisma.DealStageChangeCreateInput["toOutcome"],
+				toPipelineId: to.pipeline.id,
+				toPipelineName: to.pipeline.name,
+			},
+			select: { id: true },
+		});
+		if (to.outcome === "WON" && from?.outcome !== "WON") {
+			await this.pipelines.membership(deal.ownerId, tx);
+			await tx.activity.create({
+				data: {
+					id: `handoff-${change.id}`,
+					type: ActivityType.TASK,
+					subject: `Transferencia operativa: ${deal.name}`,
+					body: "Revisa el alcance acordado y coordina la entrega del servicio.",
+					dueAt: occurredAt,
+					companyId: deal.companyId,
+					dealId: deal.id,
+					createdById: actorId,
+					assigneeId: deal.ownerId,
+					priority: 2,
+					meta: {
+						source: "manual",
+						stageChangeId: change.id,
+						purpose: "won-handoff",
+					},
+				},
+			});
+		}
+	}
+
+	async contactOptions(dealId: string, actingUserId?: string) {
+		await this.membership(actingUserId);
 		const deal = await this.db.deal.findUnique({
 			where: { id: dealId },
 			select: { companyId: true, contacts: { select: { contactId: true } } },
@@ -588,6 +883,7 @@ export class DealsService {
 
 		return this.db.contact.findMany({
 			where: {
+				archivedAt: null,
 				companyId: deal.companyId,
 				id: { notIn: deal.contacts.map((row) => row.contactId) },
 			},
@@ -597,34 +893,26 @@ export class DealsService {
 		});
 	}
 
-	async attachContact(input: DealAttachContactInput) {
-		const company = await this.companyOf(input.dealId);
-		const contact = await this.db.contact.findUnique({
-			where: { id: input.contactId },
-			select: { companyId: true },
-		});
-
-		if (!contact) {
-			throw new NotFoundException(`No contact with id ${input.contactId}.`);
-		}
-
-		if (contact.companyId !== company.id) {
-			throw new BadRequestException(
-				`That contact does not work at ${company.name}.`,
-			);
-		}
-
+	async attachContact(input: DealAttachContactInput, actingUserId?: string) {
 		const role = roleOrNull(input.role ?? null);
-
-		await this.db.dealContact.upsert({
-			where: {
-				dealId_contactId: {
-					dealId: input.dealId,
-					contactId: input.contactId,
+		await this.db.$transaction(async (tx) => {
+			const { deal } = await this.authorizedDeal(
+				tx,
+				input.dealId,
+				actingUserId,
+				"edit",
+			);
+			await this.activeContact(tx, input.contactId, deal.companyId);
+			await tx.dealContact.upsert({
+				where: {
+					dealId_contactId: {
+						dealId: input.dealId,
+						contactId: input.contactId,
+					},
 				},
-			},
-			create: { dealId: input.dealId, contactId: input.contactId, role },
-			update: role === null ? {} : { role },
+				create: { dealId: input.dealId, contactId: input.contactId, role },
+				update: role === null ? {} : { role },
+			});
 		});
 
 		this.logger.log({
@@ -636,14 +924,15 @@ export class DealsService {
 		return { dealId: input.dealId, contactId: input.contactId };
 	}
 
-	async detachContact(input: DealDetachContactInput) {
-		const { count } = await this.db.dealContact.deleteMany({
-			where: { dealId: input.dealId, contactId: input.contactId },
+	async detachContact(input: DealDetachContactInput, actingUserId?: string) {
+		await this.db.$transaction(async (tx) => {
+			await this.authorizedDeal(tx, input.dealId, actingUserId, "edit");
+			const { count } = await tx.dealContact.deleteMany({
+				where: { dealId: input.dealId, contactId: input.contactId },
+			});
+			if (count === 0)
+				throw new NotFoundException("That contact is not on this deal.");
 		});
-
-		if (count === 0) {
-			throw new NotFoundException("That contact is not on this deal.");
-		}
 
 		this.logger.log({
 			message: "Contact detached from deal",
@@ -654,85 +943,167 @@ export class DealsService {
 		return { dealId: input.dealId, contactId: input.contactId };
 	}
 
-	async setContactRole(input: DealContactRoleInput) {
+	async setContactRole(input: DealContactRoleInput, actingUserId?: string) {
 		const role = roleOrNull(input.role);
-
-		const { count } = await this.db.dealContact.updateMany({
-			where: { dealId: input.dealId, contactId: input.contactId },
-			data: { role },
+		await this.db.$transaction(async (tx) => {
+			const { deal } = await this.authorizedDeal(
+				tx,
+				input.dealId,
+				actingUserId,
+				"edit",
+			);
+			await this.activeContact(tx, input.contactId, deal.companyId);
+			const { count } = await tx.dealContact.updateMany({
+				where: { dealId: input.dealId, contactId: input.contactId },
+				data: { role },
+			});
+			if (count === 0)
+				throw new NotFoundException("That contact is not on this deal.");
 		});
-
-		if (count === 0) {
-			throw new NotFoundException("That contact is not on this deal.");
-		}
 
 		return { dealId: input.dealId, contactId: input.contactId, role };
 	}
 
-	async bulkAssignOwner(input: DealBulkOwnerInput): Promise<BulkResult> {
-		await requireOwner(this.db, input.ownerId);
-
-		const ids = [...new Set(input.ids)];
-		const { count } = await this.db.deal.updateMany({
-			where: { id: { in: ids } },
-			data: { ownerId: input.ownerId },
-		});
-
-		this.logger.log({
-			message: "Deals reassigned",
-			count,
-			ownerId: input.ownerId,
-		});
-
-		return {
-			requested: ids.length,
-			succeeded: count,
-			skipped: 0,
-			failed: ids.length - count,
-			message: null,
-		};
+	async bulkAssignOwner(
+		input: DealBulkOwnerInput,
+		actingUserId?: string,
+	): Promise<BulkResult> {
+		await this.membership(actingUserId, this.db, true);
+		await this.membership(input.ownerId);
+		return runBulk(input.ids, (id) =>
+			this.update(id, { ownerId: input.ownerId }, actingUserId),
+		);
 	}
 
 	async bulkSetStage(
 		input: DealBulkStageInput,
 		actingUserId: string,
 	): Promise<BulkResult> {
+		await this.membership(actingUserId);
 		const closedReason = input.closedReason?.trim();
 
-		if (LOSING.has(input.stage) && !closedReason) {
+		if (input.stage && LOSING.has(input.stage) && !closedReason) {
 			throw new BadRequestException(
 				"Say why they were lost — a closed-lost deal with no reason teaches nobody anything.",
 			);
 		}
 
+		if (!input.stage && !input.pipelineStageId)
+			throw new BadRequestException("Selecciona una etapa.");
 		return runBulk(input.ids, (id) =>
-			this.setStage({ id, stage: input.stage, closedReason }, actingUserId),
+			this.setStage(
+				{
+					id,
+					stage: input.stage,
+					pipelineId: input.pipelineId,
+					pipelineStageId: input.pipelineStageId,
+					closedReason,
+				},
+				actingUserId,
+			),
 		);
 	}
 
-	async bulkArchive(ids: string[]): Promise<BulkResult> {
-		return runBulk(ids, (id) => this.archive(id));
+	async bulkArchive(ids: string[], actingUserId?: string): Promise<BulkResult> {
+		await this.membership(actingUserId);
+		return runBulk(ids, (id) => this.archive(id, actingUserId));
 	}
 
-	async bulkRestore(ids: string[]): Promise<BulkResult> {
-		return runBulk(ids, (id) => this.restore(id));
+	async bulkRestore(ids: string[], actingUserId?: string): Promise<BulkResult> {
+		await this.membership(actingUserId);
+		return runBulk(ids, (id) => this.restore(id, actingUserId));
 	}
 
-	async bulkPurge(ids: string[]): Promise<BulkResult> {
-		return runBulk(ids, (id) => this.purge(id));
+	async bulkPurge(ids: string[], actingUserId?: string): Promise<BulkResult> {
+		if ((await this.membership(actingUserId)) !== "owner")
+			throw new ForbiddenException(
+				"Sólo el propietario puede eliminar oportunidades definitivamente.",
+			);
+		return runBulk(ids, (id) => this.purge(id, actingUserId));
 	}
 
-	private async companyOf(dealId: string) {
-		const deal = await this.db.deal.findUnique({
-			where: { id: dealId },
-			select: { company: { select: { id: true, name: true } } },
-		});
+	private async membership(
+		actingUserId?: string,
+		tx: Db | Prisma.TransactionClient = this.db,
+		administrative = false,
+	) {
+		if (!actingUserId)
+			throw new ForbiddenException(
+				"Falta la identidad autenticada de la operación.",
+			);
+		return this.pipelines.membership(actingUserId, tx, administrative);
+	}
 
-		if (!deal) {
-			throw new NotFoundException(`No deal with id ${dealId}.`);
+	private assertEditable(
+		deal: { ownerId: string; archivedAt: Date | null },
+		role: string,
+		actingUserId?: string,
+	) {
+		if (deal.ownerId !== actingUserId && !["owner", "admin"].includes(role))
+			throw new ForbiddenException(
+				"No tienes permiso para cambiar esta oportunidad.",
+			);
+		if (deal.archivedAt)
+			throw new BadRequestException(
+				"Restaura la oportunidad antes de cambiarla.",
+			);
+	}
+
+	private async authorizedDeal(
+		tx: Prisma.TransactionClient,
+		id: string,
+		actingUserId: string | undefined,
+		action: "edit" | "archive" | "restore" | "purge",
+	) {
+		const role = await this.membership(actingUserId, tx);
+		const [deal] = await tx.$queryRaw<
+			Array<{
+				id: string;
+				ownerId: string;
+				companyId: string;
+				archivedAt: Date | null;
+			}>
+		>`
+			SELECT id, "ownerId", "companyId", "archivedAt" FROM deal WHERE id = ${id} FOR UPDATE
+		`;
+		if (!deal) throw new NotFoundException(`No deal with id ${id}.`);
+		if (action === "purge") {
+			if (role !== "owner")
+				throw new ForbiddenException(
+					"Sólo el propietario puede eliminar oportunidades definitivamente.",
+				);
+			if (!deal.archivedAt)
+				throw new BadRequestException(
+					"Archiva la oportunidad antes de eliminarla definitivamente.",
+				);
+		} else if (action === "edit") {
+			this.assertEditable(deal, role, actingUserId);
+		} else if (
+			deal.ownerId !== actingUserId &&
+			!["owner", "admin"].includes(role)
+		) {
+			throw new ForbiddenException(
+				"No tienes permiso para cambiar esta oportunidad.",
+			);
 		}
+		return { deal, role };
+	}
 
-		return deal.company;
+	private async activeContact(
+		tx: Prisma.TransactionClient,
+		id: string,
+		companyId: string,
+	) {
+		const [contact] = await tx.$queryRaw<
+			Array<{ companyId: string | null; archivedAt: Date | null }>
+		>`
+			SELECT "companyId", "archivedAt" FROM contact WHERE id = ${id} FOR SHARE
+		`;
+		if (!contact) throw new NotFoundException(`No contact with id ${id}.`);
+		if (contact.archivedAt || contact.companyId !== companyId)
+			throw new BadRequestException(
+				"Selecciona un contacto activo de la misma empresa.",
+			);
 	}
 
 	private searchFilter(q: string): Prisma.DealWhereInput {
@@ -759,6 +1130,10 @@ export class DealsService {
 
 		const owner = ownerFilter<Prisma.DealWhereInput>(input.owner);
 		if (owner) and.push(owner);
+		if (input.pipelineId)
+			and.push({ pipelineStage: { pipelineId: input.pipelineId } });
+		if (input.pipelineStageIds?.length)
+			and.push({ pipelineStageId: { in: input.pipelineStageIds } });
 
 		if (input.status === "open") {
 			and.push({ stage: { in: [...OPEN_DEAL_STAGES] } });
@@ -786,17 +1161,38 @@ export class DealsService {
 		filterableFields: FieldDefinitionWithOptions[],
 	) {
 		const where: Prisma.DealWhereInput = {
-			AND: [this.searchFilter(input.q), archivedFilter(input.archived)],
+			AND: [
+				this.searchFilter(input.q),
+				archivedFilter(input.archived),
+				...(input.pipelineId
+					? [{ pipelineStage: { pipelineId: input.pipelineId } }]
+					: []),
+				...(input.pipelineStageIds?.length
+					? [{ pipelineStageId: { in: input.pipelineStageIds } }]
+					: []),
+			],
 		};
 
-		const [owners, stages, fieldFacets, ...closingCounts] = await Promise.all([
-			this.db.deal.groupBy({ by: ["ownerId"], where, _count: { _all: true } }),
-			this.db.deal.groupBy({ by: ["stage"], where, _count: { _all: true } }),
-			this.fields.filterFacetCounts("DEAL", where, filterableFields),
-			...CLOSING_WINDOWS.map((window) =>
-				this.db.deal.count({ where: { AND: [where, closingFilter(window)] } }),
-			),
-		]);
+		const [owners, stages, pipelineStages, fieldFacets, ...closingCounts] =
+			await Promise.all([
+				this.db.deal.groupBy({
+					by: ["ownerId"],
+					where,
+					_count: { _all: true },
+				}),
+				this.db.deal.groupBy({ by: ["stage"], where, _count: { _all: true } }),
+				this.db.deal.groupBy({
+					by: ["pipelineStageId"],
+					where,
+					_count: { _all: true },
+				}),
+				this.fields.filterFacetCounts("DEAL", where, filterableFields),
+				...CLOSING_WINDOWS.map((window) =>
+					this.db.deal.count({
+						where: { AND: [where, closingFilter(window)] },
+					}),
+				),
+			]);
 
 		const stageCounts = countsByKey(stages, "stage");
 		const openCount = OPEN_DEAL_STAGES.reduce(
@@ -812,6 +1208,7 @@ export class DealsService {
 			status: { open: openCount, closed: closedCount },
 			owner: countsByKey(owners, "ownerId", FACET_UNASSIGNED),
 			stage: stageCounts,
+			pipelineStageIds: countsByKey(pipelineStages, "pipelineStageId"),
 			closing: Object.fromEntries(
 				CLOSING_WINDOWS.map((window, index) => [
 					window,

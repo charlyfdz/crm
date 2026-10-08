@@ -44,8 +44,11 @@ export class CompaniesRouter {
 		output: companyListOutput,
 		meta: restMeta("POST", "/companies/search", ["Companies"]),
 	})
-	async list(@Input() input: z.infer<typeof companyListInput>) {
-		return this.companies.list(input);
+	async list(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input() input: z.infer<typeof companyListInput>,
+	) {
+		return this.companies.list(input, ctx.user.id);
 	}
 
 	@Query({
@@ -53,8 +56,8 @@ export class CompaniesRouter {
 		output: companyDetailOutput,
 		meta: restMeta("GET", "/companies/{id}", ["Companies"]),
 	})
-	async byId(@Input("id") id: string) {
-		return this.companies.byId(id);
+	async byId(@Ctx() ctx: AuthedTrpcContext, @Input("id") id: string) {
+		return this.companies.byId(id, ctx.user.id);
 	}
 
 	@Query({
@@ -62,8 +65,8 @@ export class CompaniesRouter {
 		output: companyOptionOutput,
 		meta: restMeta("GET", "/companies/options", ["Companies"]),
 	})
-	async options(@Input("q") q: string) {
-		return this.companies.options(q);
+	async options(@Ctx() ctx: AuthedTrpcContext, @Input("q") q: string) {
+		return this.companies.options(q, ctx.user.id);
 	}
 
 	@Mutation({
@@ -71,8 +74,11 @@ export class CompaniesRouter {
 		output: companySummaryOutput,
 		meta: restMeta("POST", "/companies", ["Companies"]),
 	})
-	async create(@Input() input: z.infer<typeof companyCreateInput>) {
-		return this.companies.create(input);
+	async create(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input() input: z.infer<typeof companyCreateInput>,
+	) {
+		return this.companies.create(input, ctx.user.id);
 	}
 
 	@Mutation({
@@ -80,8 +86,11 @@ export class CompaniesRouter {
 		output: companySummaryOutput,
 		meta: restMeta("PATCH", "/companies/{id}", ["Companies"]),
 	})
-	async update(@Input() input: z.infer<typeof companyUpdateArgs>) {
-		return this.companies.update(input.id, input.data);
+	async update(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input() input: z.infer<typeof companyUpdateArgs>,
+	) {
+		return this.companies.update(input.id, input.data, ctx.user.id);
 	}
 
 	@Mutation({
@@ -89,8 +98,8 @@ export class CompaniesRouter {
 		output: companyArchiveResultOutput,
 		meta: restMeta("POST", "/companies/{id}/archive", ["Companies"]),
 	})
-	async archive(@Input("id") id: string) {
-		return this.companies.archive(id);
+	async archive(@Ctx() ctx: AuthedTrpcContext, @Input("id") id: string) {
+		return this.companies.archive(id, ctx.user.id);
 	}
 
 	@Mutation({
@@ -98,8 +107,8 @@ export class CompaniesRouter {
 		output: companyArchiveResultOutput,
 		meta: restMeta("POST", "/companies/{id}/restore", ["Companies"]),
 	})
-	async restore(@Input("id") id: string) {
-		return this.companies.restore(id);
+	async restore(@Ctx() ctx: AuthedTrpcContext, @Input("id") id: string) {
+		return this.companies.restore(id, ctx.user.id);
 	}
 
 	@Mutation({
@@ -107,8 +116,8 @@ export class CompaniesRouter {
 		output: companyArchiveResultOutput,
 		meta: restMeta("DELETE", "/companies/{id}", ["Companies"]),
 	})
-	async purge(@Input("id") id: string) {
-		return this.companies.purge(id);
+	async purge(@Ctx() ctx: AuthedTrpcContext, @Input("id") id: string) {
+		return this.companies.purge(id, ctx.user.id);
 	}
 
 	@Mutation({
@@ -116,8 +125,11 @@ export class CompaniesRouter {
 		output: companyBulkResultOutput,
 		meta: restMeta("POST", "/companies/bulk-assign-owner", ["Companies"]),
 	})
-	async bulkAssignOwner(@Input() input: z.infer<typeof companyBulkOwnerInput>) {
-		return this.companies.bulkAssignOwner(input);
+	async bulkAssignOwner(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input() input: z.infer<typeof companyBulkOwnerInput>,
+	) {
+		return this.companies.bulkAssignOwner(input, ctx.user.id);
 	}
 
 	@Mutation({
@@ -125,8 +137,8 @@ export class CompaniesRouter {
 		output: companyBulkResultOutput,
 		meta: restMeta("POST", "/companies/bulk-enrich", ["Companies"]),
 	})
-	async bulkEnrich(@Input("ids") ids: string[]) {
-		return this.companies.bulkEnrich(ids);
+	async bulkEnrich(@Ctx() ctx: AuthedTrpcContext, @Input("ids") ids: string[]) {
+		return this.companies.bulkEnrich(ids, ctx.user.id);
 	}
 
 	@Mutation({
@@ -134,8 +146,11 @@ export class CompaniesRouter {
 		output: companyBulkResultOutput,
 		meta: restMeta("POST", "/companies/bulk-archive", ["Companies"]),
 	})
-	async bulkArchive(@Input("ids") ids: string[]) {
-		return this.companies.bulkArchive(ids);
+	async bulkArchive(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input("ids") ids: string[],
+	) {
+		return this.companies.bulkArchive(ids, ctx.user.id);
 	}
 
 	@Mutation({
@@ -143,8 +158,11 @@ export class CompaniesRouter {
 		output: companyBulkResultOutput,
 		meta: restMeta("POST", "/companies/bulk-restore", ["Companies"]),
 	})
-	async bulkRestore(@Input("ids") ids: string[]) {
-		return this.companies.bulkRestore(ids);
+	async bulkRestore(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input("ids") ids: string[],
+	) {
+		return this.companies.bulkRestore(ids, ctx.user.id);
 	}
 
 	@Mutation({
@@ -152,8 +170,8 @@ export class CompaniesRouter {
 		output: companyBulkResultOutput,
 		meta: restMeta("POST", "/companies/bulk-purge", ["Companies"]),
 	})
-	async bulkPurge(@Input("ids") ids: string[]) {
-		return this.companies.bulkPurge(ids);
+	async bulkPurge(@Ctx() ctx: AuthedTrpcContext, @Input("ids") ids: string[]) {
+		return this.companies.bulkPurge(ids, ctx.user.id);
 	}
 
 	@Mutation({
@@ -161,8 +179,8 @@ export class CompaniesRouter {
 		output: companyEnrichOutput,
 		meta: restMeta("POST", "/companies/{id}/enrich", ["Companies"]),
 	})
-	async enrich(@Input("id") id: string) {
-		return this.companies.enrich(id);
+	async enrich(@Ctx() ctx: AuthedTrpcContext, @Input("id") id: string) {
+		return this.companies.enrich(id, ctx.user.id);
 	}
 
 	@Mutation({
@@ -182,8 +200,13 @@ export class CompaniesRouter {
 		]),
 	})
 	async setPrimaryContact(
+		@Ctx() ctx: AuthedTrpcContext,
 		@Input() input: z.infer<typeof setPrimaryContactInput>,
 	) {
-		return this.companies.setPrimaryContact(input.companyId, input.contactId);
+		return this.companies.setPrimaryContact(
+			input.companyId,
+			input.contactId,
+			ctx.user.id,
+		);
 	}
 }

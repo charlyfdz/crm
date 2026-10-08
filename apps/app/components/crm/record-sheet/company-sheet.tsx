@@ -34,9 +34,20 @@ import {
 	savingValue,
 } from "@/components/crm/inline-field";
 import { OwnerCell } from "@/components/crm/owner-cell";
+import {
+	recordControls,
+	recordOwnerOptions,
+} from "@/components/crm/record-control-policy";
+import {
+	RecordEditScope,
+	RecordReadOnlyNotice,
+} from "@/components/crm/record-edit-scope";
 import { CompanySocials } from "@/components/crm/social-links";
-import { DealStageMenu } from "@/components/crm/stage-change";
 import { Timeline } from "@/components/crm/timeline/timeline";
+import {
+	useRecordOwners,
+	useRecordViewer,
+} from "@/components/crm/use-record-viewer";
 import { WebsiteActivity } from "@/components/crm/website-activity";
 import {
 	DetailSheetBody,
@@ -53,6 +64,7 @@ import {
 	type DetailSheetTab,
 } from "@/components/detail-sheet";
 import { LocalDay } from "@/components/local-date-time";
+import { DealStageControl } from "@/components/pipelines/deal-stage-control";
 import { OPEN_STAGES } from "@/lib/deal-stage";
 import { ENRICHMENT_POLL_MS, isEnriching } from "@/lib/enrichment-status";
 import { savingField } from "@/lib/pending-field";
@@ -143,13 +155,16 @@ export function CompanySheet({ companyId }: { companyId: string }) {
 		...trpc.companies.byId.queryOptions({ id: companyId }),
 		refetchInterval: (current) => {
 			const record = current.state.data;
-			return record && isEnriching(record.enrichmentStatus, record.queued)
+			return record &&
+				isEnriching(record.enrichmentStatus, record.queued, record.ai.enabled)
 				? ENRICHMENT_POLL_MS
 				: false;
 		},
 	});
 
 	const company = query.data;
+	const { viewer } = useRecordViewer();
+	const access = company ? recordControls(viewer, company) : null;
 
 	const location = company
 		? [company.city, company.stateCode, company.country]
@@ -209,7 +224,11 @@ export function CompanySheet({ companyId }: { companyId: string }) {
 				{
 					value: "agent",
 					label: "Agent",
-					content: <AgentPanel record={{ kind: "company", id: company.id }} />,
+					content: company.ai.enabled ? (
+						<AgentPanel record={{ kind: "company", id: company.id }} />
+					) : (
+						<AiDisabledNotice />
+					),
 					keepMounted: true,
 				},
 			]
@@ -235,6 +254,7 @@ export function CompanySheet({ companyId }: { companyId: string }) {
 					<EnrichmentIndicator
 						status={company.enrichmentStatus}
 						queued={company.queued}
+						aiEnabled={company.ai.enabled}
 						title={company.enrichmentError}
 					/>
 				) : null
@@ -251,15 +271,18 @@ export function CompanySheet({ companyId }: { companyId: string }) {
 			actions={
 				company ? (
 					<>
-						<EnrichmentActions
-							companyId={company.id}
-							hasDomain={company.domain !== null}
-						/>
+						{company.ai.enabled && access?.canEdit ? (
+							<EnrichmentActions
+								companyId={company.id}
+								hasDomain={company.domain !== null}
+							/>
+						) : null}
 						<RecordActions
 							record={{ kind: "company", id: company.id }}
 							name={company.name}
 							consequence={companyConsequence(company)}
 							archivedAt={company.archivedAt}
+							owner={company.owner}
 						/>
 					</>
 				) : null
@@ -301,7 +324,9 @@ function CompanyOverview({ company }: { company: Company }) {
 	const trpc = useTRPC();
 	const cache = useCrmCache();
 
-	const users = useQuery(trpc.users.list.queryOptions());
+	const viewer = useRecordViewer();
+	const access = recordControls(viewer.viewer, company);
+	const users = useRecordOwners(access.canAssign);
 
 	const update = useMutation(
 		trpc.companies.update.mutationOptions({
@@ -320,107 +345,121 @@ function CompanyOverview({ company }: { company: Company }) {
 	const isSavingField = savingValue(update);
 
 	return (
-		<DetailSheetBody>
-			<DetailSheetSplit>
-				<DetailSheetMain>
-					{company.description ? (
-						<DetailSheetSection title="About">
-							<DetailSheetProse>{company.description}</DetailSheetProse>
-						</DetailSheetSection>
-					) : null}
-
-					<WebsiteActivity companyId={company.id} />
-				</DetailSheetMain>
-
-				<DetailSheetRail>
-					<DetailSheetSection
-						title="Details"
-						action={<FieldsCog kind="company" />}
-					>
-						<DetailSheetProperties columns={1}>
-							<InlineField
-								label="Name"
-								value={company.name}
-								saving={isSaving("name")}
-								onSave={(name) => name && save({ name })}
-							/>
-							<InlineField
-								label="Domain"
-								value={company.domain}
-								type="url"
-								placeholder="stripe.com"
-								saving={isSaving("domain")}
-								onSave={(domain) => save({ domain })}
-							/>
-							<InlineField
-								label="Website"
-								value={company.website}
-								type="url"
-								placeholder="https://stripe.com"
-								saving={isSaving("website")}
-								onSave={(website) => save({ website })}
-							/>
-							<InlineField
-								label="Phone"
-								value={company.phone}
-								type="tel"
-								saving={isSaving("phone")}
-								onSave={(phone) => save({ phone })}
-							/>
-							<InlineField
-								label="Email"
-								value={company.email}
-								type="email"
-								saving={isSaving("email")}
-								onSave={(email) => save({ email })}
-							/>
-							<InlineField
-								label="City"
-								value={company.city}
-								saving={isSaving("city")}
-								onSave={(city) => save({ city })}
-							/>
-							<InlineField
-								label="Country"
-								value={company.country}
-								saving={isSaving("country")}
-								onSave={(country) => save({ country })}
-							/>
-							<InlineSelectField
-								label="Owner"
-								value={company.owner?.id ?? UNASSIGNED}
-								options={[
-									{ value: UNASSIGNED, label: "Unassigned" },
-									...(users.data ?? []).map((user) => ({
-										value: user.id,
-										label: user.name,
-									})),
-								]}
-								onSave={(ownerId) =>
-									save({ ownerId: ownerId === UNASSIGNED ? null : ownerId })
-								}
-							/>
-							<RecordFields
-								fields={company.fields}
-								saving={isSavingField}
-								onSave={saveFields}
-							/>
-						</DetailSheetProperties>
-					</DetailSheetSection>
-
-					<DetailSheetPending
-						fields={pendingFields(company)}
-						running={isEnriching(company.enrichmentStatus, company.queued)}
+		<RecordEditScope readOnly={!access.canEdit}>
+			<DetailSheetBody>
+				{!access.canEdit ? (
+					<RecordReadOnlyNotice
+						archived={Boolean(company.archivedAt)}
+						loading={viewer.loading}
+						error={viewer.error}
 					/>
+				) : null}
+				<DetailSheetSplit>
+					<DetailSheetMain>
+						{company.description ? (
+							<DetailSheetSection title="About">
+								<DetailSheetProse>{company.description}</DetailSheetProse>
+							</DetailSheetSection>
+						) : null}
 
-					{hasCompanyLinks(company) ? (
-						<DetailSheetSection title="Links">
-							<CompanySocials company={company} />
+						<WebsiteActivity companyId={company.id} />
+					</DetailSheetMain>
+
+					<DetailSheetRail>
+						<DetailSheetSection
+							title="Details"
+							action={<FieldsCog kind="company" />}
+						>
+							<DetailSheetProperties columns={1}>
+								<InlineField
+									label="Name"
+									value={company.name}
+									saving={isSaving("name")}
+									onSave={(name) => name && save({ name })}
+								/>
+								<InlineField
+									label="Domain"
+									value={company.domain}
+									type="url"
+									placeholder="stripe.com"
+									saving={isSaving("domain")}
+									onSave={(domain) => save({ domain })}
+								/>
+								<InlineField
+									label="Website"
+									value={company.website}
+									type="url"
+									placeholder="https://stripe.com"
+									saving={isSaving("website")}
+									onSave={(website) => save({ website })}
+								/>
+								<InlineField
+									label="Phone"
+									value={company.phone}
+									type="tel"
+									saving={isSaving("phone")}
+									onSave={(phone) => save({ phone })}
+								/>
+								<InlineField
+									label="Email"
+									value={company.email}
+									type="email"
+									saving={isSaving("email")}
+									onSave={(email) => save({ email })}
+								/>
+								<InlineField
+									label="City"
+									value={company.city}
+									saving={isSaving("city")}
+									onSave={(city) => save({ city })}
+								/>
+								<InlineField
+									label="Country"
+									value={company.country}
+									saving={isSaving("country")}
+									onSave={(country) => save({ country })}
+								/>
+								<InlineSelectField
+									label="Owner"
+									value={company.owner?.id ?? UNASSIGNED}
+									options={recordOwnerOptions(
+										users.users,
+										company.owner,
+										UNASSIGNED,
+									)}
+									readOnly={!access.canAssign || !users.ready}
+									onSave={(ownerId) =>
+										save({ ownerId: ownerId === UNASSIGNED ? null : ownerId })
+									}
+								/>
+								<RecordFields
+									fields={company.fields}
+									saving={isSavingField}
+									onSave={saveFields}
+								/>
+							</DetailSheetProperties>
 						</DetailSheetSection>
-					) : null}
-				</DetailSheetRail>
-			</DetailSheetSplit>
-		</DetailSheetBody>
+
+						{company.ai.enabled ? (
+							<DetailSheetPending
+								fields={pendingFields(company)}
+								running={isEnriching(
+									company.enrichmentStatus,
+									company.queued,
+									company.ai.enabled,
+								)}
+							/>
+						) : null}
+
+						{hasCompanyLinks(company) ? (
+							<DetailSheetSection title="Links">
+								<CompanySocials company={company} />
+							</DetailSheetSection>
+						) : null}
+					</DetailSheetRail>
+				</DetailSheetSplit>
+			</DetailSheetBody>
+		</RecordEditScope>
 	);
 }
 
@@ -438,6 +477,9 @@ function CompanyContacts({
 	const trpc = useTRPC();
 	const cache = useCrmCache();
 	const openRecord = useOpenRecord();
+	const { viewer } = useRecordViewer();
+	const access = recordControls(viewer, company);
+	const canAdd = access.canCreate && !company.archivedAt;
 
 	const setPrimary = useMutation(
 		trpc.companies.setPrimaryContact.mutationOptions({
@@ -446,13 +488,10 @@ function CompanyContacts({
 		}),
 	);
 
-	const form = adding ? (
-		<QuickAddContact
-			companyId={company.id}
-			ownerId={company.owner?.id ?? null}
-			onDone={onDone}
-		/>
-	) : null;
+	const form =
+		adding && canAdd ? (
+			<QuickAddContact companyId={company.id} onDone={onDone} />
+		) : null;
 
 	if (company.contacts.length === 0) {
 		return (
@@ -464,7 +503,12 @@ function CompanyContacts({
 						title="No contacts yet"
 						description={`Everyone you talk to at ${company.name} lives here — add the first person and their calls, emails and notes hang off them.`}
 						action={
-							<Button variant="outline" size="sm" onClick={onAdd}>
+							<Button
+								variant="outline"
+								size="sm"
+								onClick={onAdd}
+								disabled={!canAdd}
+							>
 								<Icon icon={Add} data-icon="inline-start" />
 								Add contact
 							</Button>
@@ -494,23 +538,28 @@ function CompanyContacts({
 											variant="ghost"
 											size="icon-xs"
 											aria-pressed={isPrimary}
-											disabled={isPrimary || setPrimary.isPending}
+											disabled={!access.canEdit || setPrimary.isPending}
 											onClick={(event) => {
 												event.stopPropagation();
+												if (!access.canEdit) return;
 												setPrimary.mutate({
 													companyId: company.id,
-													contactId: contact.id,
+													contactId: isPrimary ? null : contact.id,
 												});
 											}}
 										>
 											<Icon icon={isPrimary ? StarFilled : Star} />
 											<span className="sr-only">
-												{isPrimary ? "Primary contact" : "Make primary"}
+												{isPrimary
+													? "Quitar contacto principal"
+													: "Marcar como principal"}
 											</span>
 										</Button>
 									</TooltipTrigger>
 									<TooltipContent>
-										{isPrimary ? "Primary contact" : "Make primary"}
+										{isPrimary
+											? "Quitar contacto principal"
+											: "Marcar como principal"}
 									</TooltipContent>
 								</Tooltip>
 							</TableCell>
@@ -545,6 +594,7 @@ function CompanyContacts({
 				})}
 
 				<AddRow
+					disabled={!canAdd}
 					label="Add contact"
 					columns={CONTACT_COLUMNS.length}
 					onClick={onAdd}
@@ -566,15 +616,19 @@ function CompanyDeals({
 	onDone: () => void;
 }) {
 	const openRecord = useOpenRecord();
+	const { viewer } = useRecordViewer();
+	const canAdd =
+		recordControls(viewer, company).canCreate && !company.archivedAt;
 
-	const form = adding ? (
-		<QuickAddDeal
-			companyId={company.id}
-			companyName={company.name}
-			ownerId={company.owner?.id ?? null}
-			onDone={onDone}
-		/>
-	) : null;
+	const form =
+		adding && canAdd ? (
+			<QuickAddDeal
+				companyId={company.id}
+				companyName={company.name}
+				ownerId={null}
+				onDone={onDone}
+			/>
+		) : null;
 
 	if (company.deals.length === 0) {
 		return (
@@ -586,7 +640,12 @@ function CompanyDeals({
 						title="No deals yet"
 						description={`Nothing is being sold to ${company.name} right now. Open one and it joins the pipeline and the forecast.`}
 						action={
-							<Button variant="outline" size="sm" onClick={onAdd}>
+							<Button
+								variant="outline"
+								size="sm"
+								onClick={onAdd}
+								disabled={!canAdd}
+							>
 								<Icon icon={Add} data-icon="inline-start" />
 								New deal
 							</Button>
@@ -611,7 +670,7 @@ function CompanyDeals({
 							{deal.name}
 						</TableCell>
 						<TableCell className="px-3 py-2.5">
-							<DealStageMenu dealId={deal.id} stage={deal.stage} />
+							<DealStageControl dealId={deal.id} />
 						</TableCell>
 						<TableCell className="px-3 py-2.5 text-right">
 							<DealAmount
@@ -633,6 +692,7 @@ function CompanyDeals({
 				))}
 
 				<AddRow
+					disabled={!canAdd}
 					label="New deal"
 					columns={DEAL_COLUMNS.length}
 					onClick={onAdd}
@@ -641,3 +701,5 @@ function CompanyDeals({
 		</>
 	);
 }
+
+import { AiDisabledNotice } from "@/components/ai-disabled-notice";

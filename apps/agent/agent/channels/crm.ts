@@ -1,10 +1,12 @@
 import { timingSafeEqual } from "node:crypto";
 import { EnrichmentStatus, Prisma } from "@crm/db";
 import { MAX_ATTEMPTS } from "@crm/db/agent-tasks";
+import { aiFeaturePolicy, requireAiEnabled } from "@crm/env/features";
 import { schemas } from "@crm/validation";
 import { eveTurnFailure } from "@crm/validation/eve-stream";
 import { defineChannel, GET, POST } from "eve/channels";
 import { z } from "zod";
+import { aiDisabledResponse } from "../lib/ai-policy";
 import { persistBuilderInputRequest } from "../lib/builder-input";
 import { verifyKey } from "../lib/context-dev";
 import {
@@ -102,10 +104,23 @@ export async function closeTask(
 
 export default defineChannel({
 	routes: [
+		GET("/internal/crm/ai-status", async (request) => {
+			if (!authorised(request)) {
+				return new Response("Unauthorized", { status: 401 });
+			}
+
+			return Response.json(aiFeaturePolicy(), {
+				headers: { "cache-control": "no-store" },
+			});
+		}),
+
 		GET("/internal/crm/dispatch-health", async (request) => {
 			if (!authorised(request)) {
 				return new Response("Unauthorized", { status: 401 });
 			}
+
+			const disabled = aiDisabledResponse();
+			if (disabled) return disabled;
 
 			const health = dispatchHealth();
 			const { db } = await import("@crm/db");
@@ -136,6 +151,9 @@ export default defineChannel({
 				return new Response("Unauthorized", { status: 401 });
 			}
 
+			const disabled = aiDisabledResponse();
+			if (disabled) return disabled;
+
 			waitUntil(
 				(async () => {
 					await reconcileStaleTasks();
@@ -159,6 +177,9 @@ export default defineChannel({
 					return new Response("Unauthorized", { status: 401 });
 				}
 
+				const disabled = aiDisabledResponse();
+				if (disabled) return disabled;
+
 				waitUntil(drainBuilder(send));
 				return new Response(null, { status: 202 });
 			},
@@ -170,6 +191,9 @@ export default defineChannel({
 				if (!authorised(request)) {
 					return new Response("Unauthorized", { status: 401 });
 				}
+
+				const disabled = aiDisabledResponse();
+				if (disabled) return disabled;
 
 				waitUntil(drainAgentRuns(send));
 				return new Response(null, { status: 202 });
@@ -223,6 +247,9 @@ export default defineChannel({
 			if (!authorised(request)) {
 				return new Response("Unauthorized", { status: 401 });
 			}
+
+			const disabled = aiDisabledResponse();
+			if (disabled) return disabled;
 
 			const { apiKey } = verifyKeyRequest.parse(
 				await request.json().catch(() => null),
@@ -399,6 +426,7 @@ export default defineChannel({
 	},
 
 	async receive(input, { send }) {
+		requireAiEnabled();
 		const target = receiveTarget.parse(input.target);
 		if (target.builderSubmissionId) {
 			assertInternalDispatchAuth(input.auth);

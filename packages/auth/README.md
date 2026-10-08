@@ -3,10 +3,12 @@
 [Better Auth](https://better-auth.com) configuration for the monorepo, backed by
 `@crm/db`.
 
-Enabled: Google sign-in, account linking, cookie-cached sessions, and
-database-backed rate limiting. This is an internal, single-tenant app — there
-are no organizations, and email + password is switched off so the only way in
-is a Google account.
+Local email/password sign-in is enabled. Public registration is closed.
+Google, Microsoft and SSO are optional for explicitly provisioned users.
+Sessions are database-backed without cookie caching. Rate limiting uses the database.
+The singleton workspace holds membership, not multi-company tenancy.
+Supported roles remain owner, admin and member. Unknown and suspended membership fail closed.
+See [managed access](../../docs/access/local-access.md) for operator bootstrap and user management.
 
 ## Topology
 
@@ -70,13 +72,15 @@ whatever `process.env` its host process has, and `src/env.ts` imports
 CLI loads `auth.ts` directly. See
 [`docs/environment.md`](../../docs/environment.md).
 
-Create an OAuth client in the Google Cloud console and add
+Only if Google is required, create an OAuth client in the Google Cloud console and add
 `<API_URL>/api/auth/callback/google` — `http://localhost:3001/api/auth/callback/google`
 in development — as an authorised redirect URI.
 
-`ALLOWED_SIGN_IN` decides who may sign in, and an empty value admits nobody. It
-is the whole authorisation model: there are no roles and no organizations, so
-`src/workspace.ts` is worth reading before you change anything here.
+`ALLOWED_SIGN_IN` defines eligible addresses, not account creation or authorization.
+An empty value admits nobody. Every login also needs existing active workspace membership.
+Read `src/workspace.ts`, `src/organization.ts` and `src/identity.ts` before changing access.
+HTTP organization and API-key plugin endpoints are disabled. Managed operations use guarded tRPC.
+Internal server SDK calls remain available to the services; they are not public management routes.
 
 ## Changing the schema
 
@@ -84,9 +88,12 @@ Adding a plugin or an additional user field changes the database schema. After
 editing `src/auth.ts`:
 
 ```bash
-bun run auth:generate   # rewrites packages/db/prisma/schema.prisma
-bun run db:migrate      # create the migration
+bun run db:generate    # regenerate the existing Prisma client
 ```
+
+Keep corporate models and migrations intact. Auth CLI regeneration rewrites the schema;
+do not run it blindly over the business schema. Review a generated auth diff separately.
+Migration deployment and PostgreSQL upgrade need an identified isolated destination and backup.
 
 ## Notes
 

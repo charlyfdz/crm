@@ -2,8 +2,8 @@
 
 import Archive from "@carbon/icons-react/es/Archive";
 import Undo from "@carbon/icons-react/es/Undo";
-import type { DealStage } from "@crm/db/enums";
 import { Button } from "@crm/ui/components/button";
+import { Checkbox } from "@crm/ui/components/checkbox";
 import {
 	Dialog,
 	DialogContent,
@@ -33,9 +33,17 @@ import {
 	BulkOwnerMenu,
 	reportBulk,
 } from "@/components/crm/bulk-actions";
-import { DEAL_STAGE_OPTIONS, LOSING_STAGES } from "@/lib/deal-stage";
+import { PIPELINE_EDITOR } from "@/components/pipelines/pipeline-config";
+import { stageRequiresReason } from "@/components/pipelines/pipeline-model";
 import { useCrmCache } from "@/lib/trpc/cache";
 import { useTRPC } from "@/lib/trpc/client";
+import type { RouterOutputs } from "@/lib/trpc/types";
+
+type BulkStage =
+	RouterOutputs["pipelines"]["list"]["rows"][number]["stages"][number] & {
+		pipelineId: string;
+		pipelineName: string;
+	};
 
 function deals(count: number): string {
 	return formatCount(count, "deal");
@@ -53,8 +61,11 @@ export function DealsBulkActions({
 	const trpc = useTRPC();
 	const cache = useCrmCache();
 	const users = useQuery(trpc.users.list.queryOptions());
+	const pipelines = useQuery(trpc.pipelines.list.queryOptions());
 	const reasonId = useId();
-	const [closing, setClosing] = useState<DealStage | null>(null);
+	const confirmId = useId();
+	const [closing, setClosing] = useState<BulkStage | null>(null);
+	const [confirmedMove, setConfirmedMove] = useState(false);
 	const [reason, setReason] = useState("");
 	const [confirming, setConfirming] = useState(false);
 
@@ -78,6 +89,7 @@ export function DealsBulkActions({
 				reportBulk(result, (count) => `${deals(count)} moved.`);
 				setClosing(null);
 				setReason("");
+				setConfirmedMove(false);
 				onDone();
 			},
 			onError,
@@ -165,23 +177,28 @@ export function DealsBulkActions({
 					}
 				/>
 				<DropdownMenuSub>
-					<DropdownMenuSubTrigger>Change stage</DropdownMenuSubTrigger>
+					<DropdownMenuSubTrigger disabled={!pipelines.isSuccess}>
+						Cambiar etapa
+					</DropdownMenuSubTrigger>
 					<DropdownMenuSubContent className="max-h-72 overflow-y-auto">
 						<DropdownMenuGroup>
-							{DEAL_STAGE_OPTIONS.map((option) => (
-								<DropdownMenuItem
-									key={option.value}
-									onSelect={() => {
-										if (LOSING_STAGES.includes(option.value)) {
-											setClosing(option.value);
-											return;
-										}
-										setStage.mutate({ ids, stage: option.value });
-									}}
-								>
-									{option.label}
-								</DropdownMenuItem>
-							))}
+							{(pipelines.data?.rows ?? []).flatMap((pipeline) =>
+								pipeline.stages.map((option) => (
+									<DropdownMenuItem
+										key={option.id}
+										onSelect={() => {
+											setClosing({
+												...option,
+												pipelineId: pipeline.id,
+												pipelineName: pipeline.name,
+											});
+											setConfirmedMove(false);
+										}}
+									>
+										{pipeline.name} · {option.name}
+									</DropdownMenuItem>
+								)),
+							)}
 						</DropdownMenuGroup>
 					</DropdownMenuSubContent>
 				</DropdownMenuSub>
@@ -200,18 +217,19 @@ export function DealsBulkActions({
 					if (next) return;
 					setClosing(null);
 					setReason("");
+					setConfirmedMove(false);
 				}}
 			>
 				<DialogContent>
 					<DialogHeader>
 						<DialogTitle>
-							{closing === "CLOSED_LOST"
-								? `Close ${deals(ids.length)} as lost`
-								: `Mark ${deals(ids.length)} as unqualified`}
+							Mover {ids.length} oportunidades a {closing?.pipelineName} ·{" "}
+							{closing?.name}
 						</DialogTitle>
 						<DialogDescription>
-							The same reason goes on every one of them, so keep it to what they
-							have in common.
+							El cambio usa la misma etapa y motivo para todas. Cada oportunidad
+							conserva su historial. La API comprueba los permisos por registro
+							y comunica los fallos parciales.
 						</DialogDescription>
 					</DialogHeader>
 
@@ -220,19 +238,51 @@ export function DealsBulkActions({
 						className="px-4"
 						onSubmit={(event) => {
 							event.preventDefault();
-							if (!closing) return;
-							setStage.mutate({ ids, stage: closing, closedReason: reason });
+							if (
+								!closing ||
+								!confirmedMove ||
+								setStage.isPending ||
+								(stageRequiresReason(closing.outcome) && !reason.trim())
+							)
+								return;
+							setStage.mutate({
+								ids,
+								pipelineId: closing.pipelineId,
+								pipelineStageId: closing.id,
+								closedReason: reason,
+							});
 						}}
 					>
 						<Field>
-							<FieldLabel htmlFor={reasonId}>Reason</FieldLabel>
+							<FieldLabel htmlFor={reasonId}>
+								{closing && stageRequiresReason(closing.outcome)
+									? "Motivo obligatorio"
+									: "Nota del movimiento"}
+							</FieldLabel>
 							<Textarea
 								id={reasonId}
 								value={reason}
+								maxLength={PIPELINE_EDITOR.reasonLength}
+								required={Boolean(
+									closing && stageRequiresReason(closing.outcome),
+								)}
 								onChange={(event) => setReason(event.target.value)}
 								placeholder="Budget pulled for the quarter"
 								rows={3}
 							/>
+						</Field>
+						<Field orientation="horizontal">
+							<Checkbox
+								id={confirmId}
+								checked={confirmedMove}
+								onCheckedChange={(checked) =>
+									setConfirmedMove(checked === true)
+								}
+							/>
+							<FieldLabel htmlFor={confirmId}>
+								Confirmo la etapa para todas las oportunidades y su traslado a
+								este proceso.
+							</FieldLabel>
 						</Field>
 					</form>
 
@@ -240,7 +290,15 @@ export function DealsBulkActions({
 						<Button
 							type="submit"
 							form="bulk-close-reason"
-							disabled={setStage.isPending || reason.trim() === ""}
+							disabled={
+								setStage.isPending ||
+								!confirmedMove ||
+								Boolean(
+									closing &&
+										stageRequiresReason(closing.outcome) &&
+										!reason.trim(),
+								)
+							}
 						>
 							{setStage.isPending ? <Spinner /> : null}
 							Save

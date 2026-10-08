@@ -1,4 +1,5 @@
 import { db, Prisma } from "@crm/db";
+import { requireAiEnabled } from "@crm/env/features";
 import { CRM_EVENT_CATALOG } from "@crm/db/crm-events";
 import { lockIdempotencyKey } from "@crm/db/idempotency";
 import { crmEventTask } from "@crm/validation/agent-events";
@@ -47,6 +48,7 @@ const builderSubmissionMessage = z
 	});
 
 export async function pendingBuilderSubmissionIds(): Promise<string[]> {
+	requireAiEnabled();
 	await recoverBuilderSubmissions();
 	const rows = await db.agentConversationSubmission.findMany({
 		where: {
@@ -72,6 +74,7 @@ export async function pendingBuilderSubmissionIds(): Promise<string[]> {
 }
 
 export async function drainBuilder(send: SendFn): Promise<number> {
+	requireAiEnabled();
 	const ids = await pendingBuilderSubmissionIds();
 	await Promise.all(ids.map((id) => dispatchBuilderSubmission(id, send)));
 	return ids.length;
@@ -81,6 +84,7 @@ export async function dispatchBuilderSubmission(
 	submissionId: string,
 	send: SendFn,
 ) {
+	requireAiEnabled();
 	const submission = await db.$transaction(async (tx) => {
 		const seed = await tx.agentConversationSubmission.findUnique({
 			where: { id: submissionId },
@@ -226,6 +230,7 @@ export async function dispatchBuilderSubmission(
 }
 
 export async function queueDueAgentRuns(now = new Date()): Promise<number> {
+	requireAiEnabled();
 	const triggers = await db.agentTrigger.findMany({
 		where: {
 			enabled: true,
@@ -302,6 +307,7 @@ export async function queueEventAgentRuns(
 		"id" | "contactId" | "companyId" | "dealId" | "payload"
 	>,
 ): Promise<number> {
+	requireAiEnabled();
 	const parsed = crmEventTask.safeParse(task.payload);
 	if (!parsed.success) {
 		throw new Error("The queued agent event is invalid.");
@@ -390,6 +396,7 @@ export async function queueEventAgentRuns(
 }
 
 export async function pendingAgentRunIds(): Promise<string[]> {
+	requireAiEnabled();
 	await recoverAgentRuns();
 	const rows = await db.agentRun.findMany({
 		where: {
@@ -424,6 +431,7 @@ export async function pendingAgentRunIds(): Promise<string[]> {
 }
 
 export async function drainAgentRuns(send: SendFn): Promise<number> {
+	requireAiEnabled();
 	await queueDueAgentRuns();
 
 	let dispatched = 0;
@@ -453,6 +461,7 @@ export async function drainAgentRuns(send: SendFn): Promise<number> {
 }
 
 export async function dispatchAgentRun(runId: string, send: SendFn) {
+	requireAiEnabled();
 	const run = await db.agentRun.findUnique({
 		where: { id: runId },
 		select: {

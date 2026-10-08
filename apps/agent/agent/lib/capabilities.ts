@@ -2,6 +2,7 @@ import "@crm/env/load";
 
 import { db } from "@crm/db";
 import { readContextDevKey } from "@crm/db/settings";
+import { AI_DISABLED_REASON, isAiEnabled } from "@crm/env/features";
 
 export const CONTEXT_DEV = "CONTEXT_DEV";
 
@@ -18,6 +19,7 @@ export type Capability = {
 };
 
 export async function contextDevKey(): Promise<string | null> {
+	if (!isAiEnabled()) return null;
 	try {
 		return await readContextDevKey(db);
 	} catch (error) {
@@ -41,7 +43,7 @@ export function capabilitiesFrom(
 	const fromEnv = (id: string) => ({
 		id,
 		from: id,
-		enabled: Boolean(process.env[id]?.trim()),
+		enabled: isAiEnabled() && Boolean(process.env[id]?.trim()),
 	});
 
 	return [
@@ -56,7 +58,7 @@ export function capabilitiesFrom(
 			from: "Settings → General",
 			label: "Company brand data",
 			gives: "a company's logo, industry, location and socials from its domain",
-			enabled: contextDev !== null,
+			enabled: isAiEnabled() && contextDev !== null,
 		},
 		{
 			id: CONTEXT_DEV_PEOPLE,
@@ -64,7 +66,7 @@ export function capabilitiesFrom(
 			label: "LinkedIn",
 			gives:
 				"a person read back from a LinkedIn URL you already hold — their real name, bio, current title and employer, every earlier role with its dates, their education and their other public profiles, all self-reported and so authoritative on identity",
-			enabled: contextDev !== null,
+			enabled: isAiEnabled() && contextDev !== null,
 		},
 		{
 			...fromEnv("BLOB_READ_WRITE_TOKEN"),
@@ -76,6 +78,7 @@ export function capabilitiesFrom(
 }
 
 export async function enabled(id: string): Promise<boolean> {
+	if (!isAiEnabled()) return false;
 	return (await capabilities()).some(
 		(capability) => capability.id === id && capability.enabled,
 	);
@@ -110,6 +113,7 @@ export async function capabilitiesMarkdown(): Promise<string> {
 }
 
 export function markdownFor(all: readonly Capability[]): string {
+	if (!isAiEnabled()) return `## AI status\n\n${AI_DISABLED_REASON}`;
 	const on = all.filter((capability) => capability.enabled);
 	const off = all.filter((capability) => !capability.enabled);
 

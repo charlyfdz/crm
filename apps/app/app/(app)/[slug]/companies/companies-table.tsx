@@ -147,7 +147,11 @@ const COLUMNS: DataTableColumn<CompanyRow>[] = [
 		defaultHidden: true,
 		width: "w-[14%]",
 		cell: (row) => (
-			<EnrichmentIndicator status={row.enrichmentStatus} queued={row.queued} />
+			<EnrichmentIndicator
+				status={row.enrichmentStatus}
+				queued={row.queued}
+				aiEnabled={row.ai.enabled}
+			/>
 		),
 	},
 ];
@@ -182,7 +186,7 @@ export function CompaniesTable() {
 		placeholderData: (previous) => previous,
 		refetchInterval: (query) =>
 			query.state.data?.rows.some((row) =>
-				isEnriching(row.enrichmentStatus, row.queued),
+				isEnriching(row.enrichmentStatus, row.queued, row.ai.enabled),
 			)
 				? ENRICHMENT_POLL_MS
 				: false,
@@ -270,6 +274,7 @@ export function CompaniesTable() {
 				actions: (
 					<CompaniesBulkActions
 						ids={selection.ids}
+						rows={rows}
 						onDone={selection.clear}
 						archived={input.archived}
 					/>

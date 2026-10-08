@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { aiPolicyOutput } from "../agent/ai-policy";
 import { SLACK, SLACK_SYNC_STATES } from "./slack-config";
 
 export const slackChannelsInput = z.object({
@@ -56,6 +57,7 @@ const slackAgentSummaryOutput = z.object({
 });
 
 export const slackStatusOutput = z.object({
+	ai: aiPolicyOutput,
 	configured: z.boolean(),
 	connected: z.boolean(),
 	workspace: z.string().nullable(),
@@ -79,6 +81,7 @@ const slackMemberMatchOutput = z.object({
 });
 
 export const slackMatchesOutput = z.object({
+	ai: aiPolicyOutput.optional(),
 	rows: z.array(
 		z.object({
 			crmUserId: z.string(),
@@ -93,6 +96,7 @@ export const slackMatchesOutput = z.object({
 export type SlackMatches = z.infer<typeof slackMatchesOutput>;
 
 export const slackChannelsOutput = z.object({
+	ai: aiPolicyOutput,
 	canInviteItself: z.boolean(),
 	sync: slackSyncStateOutput,
 	nextCursor: z.string().nullable(),

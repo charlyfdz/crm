@@ -4,6 +4,7 @@ import {
 	Logger,
 	ServiceUnavailableException,
 } from "@nestjs/common";
+import { requireApiAiEnabled } from "../agent/ai-policy";
 import { bridge } from "../agent/bridge";
 import { slackCreateChannelReply } from "./slack.contracts";
 
@@ -16,6 +17,7 @@ export class SlackChannelsService {
 	private readonly logger = new Logger(SlackChannelsService.name);
 
 	async create(name: string, isPrivate: boolean) {
+		requireApiAiEnabled();
 		const agent = bridge();
 
 		if (!agent) {

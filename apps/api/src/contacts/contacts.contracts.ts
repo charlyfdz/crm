@@ -7,6 +7,7 @@ import {
 } from "@crm/db";
 import { FIELD_ENTITIES, FIELD_TYPES } from "@crm/db/fields";
 import { z } from "zod";
+import { aiPolicyOutput } from "../agent/ai-policy";
 import { bulkIdsInput } from "../crm/bulk";
 import { recordFieldValues } from "../fields/fields.contracts";
 import { activityFacetInput, listInput } from "../trpc/list-input";
@@ -131,6 +132,7 @@ const contactOwnerOutput = z.object({
 });
 
 export const contactRowOutput = z.object({
+	ai: aiPolicyOutput,
 	id: z.string(),
 	firstName: z.string(),
 	lastName: z.string().nullable(),
@@ -224,6 +226,7 @@ const contactDealOutput = z.object({
 });
 
 export const contactByIdOutput = z.object({
+	ai: aiPolicyOutput,
 	id: z.string(),
 	firstName: z.string(),
 	lastName: z.string().nullable(),

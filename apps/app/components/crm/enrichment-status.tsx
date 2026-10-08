@@ -5,15 +5,21 @@ import { enrichmentPresentation } from "@/lib/enrichment-status";
 export function EnrichmentIndicator({
 	status,
 	queued = false,
+	aiEnabled = true,
 	title,
 	className,
 }: {
 	status: EnrichmentStatus;
 	queued?: boolean;
+	aiEnabled?: boolean;
 	title?: string | null;
 	className?: string;
 }) {
-	const { label, tone, busy } = enrichmentPresentation(status, queued);
+	const { label, tone, busy } = enrichmentPresentation(
+		status,
+		queued,
+		aiEnabled,
+	);
 
 	return (
 		<StatusIndicator

@@ -3,6 +3,7 @@ import {
 	MIN_ARCHIVE_RETENTION_DAYS,
 } from "@crm/db/settings";
 import { z } from "zod";
+import { aiPolicyOutput } from "../agent/ai-policy";
 
 export const catalogModelOutput = z.object({
 	id: z.string(),
@@ -34,6 +35,7 @@ export type ModelCatalogResult = z.infer<typeof modelCatalogOutput>;
 export const researchKeyOutput = z.object({
 	configured: z.boolean(),
 	hint: z.string().nullable(),
+	ai: aiPolicyOutput,
 });
 
 export type ResearchKeySettings = z.infer<typeof researchKeyOutput>;

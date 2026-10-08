@@ -82,10 +82,12 @@ export function AddRow({
 	label,
 	columns,
 	onClick,
+	disabled = false,
 }: {
 	label: string;
 	columns: number;
 	onClick: () => void;
+	disabled?: boolean;
 }) {
 	return (
 		<SimpleTableRow>
@@ -94,6 +96,7 @@ export function AddRow({
 					variant="ghost"
 					size="sm"
 					onClick={onClick}
+					disabled={disabled}
 					className="h-9 w-full justify-start px-5 font-normal text-muted-foreground"
 				>
 					<Icon icon={Add} data-icon="inline-start" />

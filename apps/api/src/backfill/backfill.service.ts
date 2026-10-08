@@ -2,10 +2,12 @@ import { onSignedIn } from "@crm/auth";
 import { type Db, EnrichmentStatus, type Prisma } from "@crm/db";
 import { PRIORITY } from "@crm/db/agent-tasks";
 import { readWorkspaceIdentity } from "@crm/db/workspace";
+import { isAiEnabled } from "@crm/env/features";
 import { CACHE_MANAGER } from "@nestjs/cache-manager";
 import { Inject, Injectable, Logger, type OnModuleInit } from "@nestjs/common";
 import type { Cache } from "cache-manager";
 import { AgentTriggerService } from "../agent/agent-trigger.service";
+import { requireApiAiEnabled } from "../agent/ai-policy";
 import { FaviconService } from "../companies/favicon.service";
 import { InjectDatabase } from "../database/database.constants";
 import { ImageMirrorService } from "./image-mirror.service";
@@ -63,8 +65,11 @@ export class BackfillService implements OnModuleInit {
 	}
 
 	async auto(): Promise<{ started: boolean }> {
+		if (!isAiEnabled()) return { started: false };
 		if (await this.cache.get(AUTO_KEY)) return { started: false };
+		if (!isAiEnabled()) return { started: false };
 		await this.cache.set(AUTO_KEY, true, AUTO_EVERY_MS);
+		if (!isAiEnabled()) return { started: false };
 
 		void (async () => {
 			try {
@@ -94,9 +99,10 @@ export class BackfillService implements OnModuleInit {
 	}
 
 	private async sweepWorkspace(): Promise<void> {
+		if (!isAiEnabled()) return;
 		const us = await readWorkspaceIdentity(this.db);
 
-		if (!us?.website || us.profile) return;
+		if (!isAiEnabled() || !us?.website || us.profile) return;
 
 		const attempted = await this.db.agentTask.findFirst({
 			where: {
@@ -106,7 +112,7 @@ export class BackfillService implements OnModuleInit {
 			select: { id: true },
 		});
 
-		if (attempted) return;
+		if (attempted || !isAiEnabled()) return;
 
 		await this.agent.workspaceChanged(
 			us.website,
@@ -115,18 +121,21 @@ export class BackfillService implements OnModuleInit {
 	}
 
 	async run(scope: BackfillScope): Promise<BackfillResult> {
+		requireApiAiEnabled();
 		if (scope === "contacts") return this.runContacts();
 
 		return this.runCompanies(scope === "deals");
 	}
 
 	private async runCompanies(dealsOnly: boolean): Promise<BackfillResult> {
+		if (!isAiEnabled()) return this.inertResult();
 		const onDeals: Prisma.CompanyWhereInput = dealsOnly
 			? { deals: { some: {} } }
 			: {};
 
 		const needsBrand = this.companiesNeedingBrand();
 		const needsArtwork = await this.companiesNeedingArtwork();
+		if (!isAiEnabled()) return this.inertResult();
 
 		const [total, rows, artworkRows] = await Promise.all([
 			this.db.company.count({
@@ -146,6 +155,7 @@ export class BackfillService implements OnModuleInit {
 			}),
 		]);
 
+		if (!isAiEnabled()) return this.inertResult();
 		const companyIds = [
 			...new Set([
 				...rows.map((row) => row.id),
@@ -161,6 +171,7 @@ export class BackfillService implements OnModuleInit {
 			priority: PRIORITY.brand,
 		});
 
+		if (!isAiEnabled()) return this.inertResult();
 		const profile = await this.agent.backfill({
 			kind: "company-profile",
 			reason: "Backfill — this company was never successfully looked up",
@@ -174,6 +185,7 @@ export class BackfillService implements OnModuleInit {
 
 		const iconsResolving = dealsOnly ? 0 : await this.sweepFavicons();
 
+		if (!isAiEnabled()) return this.inertResult();
 		return {
 			...queued,
 			remaining: Math.max(0, total - companyIds.length),
@@ -182,7 +194,9 @@ export class BackfillService implements OnModuleInit {
 	}
 
 	private async runContacts(): Promise<BackfillResult> {
+		if (!isAiEnabled()) return this.inertResult();
 		const needsPhoto = await this.contactsNeedingPhoto();
+		if (!isAiEnabled()) return this.inertResult();
 
 		const [photoTotal, photoRows] = await Promise.all([
 			this.db.contact.count({ where: needsPhoto }),
@@ -194,6 +208,7 @@ export class BackfillService implements OnModuleInit {
 			}),
 		]);
 
+		if (!isAiEnabled()) return this.inertResult();
 		const photos = await this.agent.backfill({
 			kind: "portrait",
 			reason: "Backfill — somewhere to look for a picture, and no picture",
@@ -203,6 +218,7 @@ export class BackfillService implements OnModuleInit {
 		});
 
 		const headroom = MAX_PER_RUN - photoRows.length;
+		if (!isAiEnabled()) return this.inertResult();
 
 		const [researchTotal, researchRows] = await Promise.all([
 			this.db.contact.count({ where: this.contactsNeverResearched() }),
@@ -216,12 +232,14 @@ export class BackfillService implements OnModuleInit {
 				: Promise.resolve([]),
 		]);
 
+		if (!isAiEnabled()) return this.inertResult();
 		const research = await this.agent.backfill({
 			kind: "identify",
 			reason: "Backfill — this contact was never researched",
 			contactIds: researchRows.map((row) => row.id),
 		});
 
+		if (!isAiEnabled()) return this.inertResult();
 		return {
 			queued: photos.queued + research.queued,
 			alreadyQueued: photos.alreadyQueued + research.alreadyQueued,
@@ -233,6 +251,7 @@ export class BackfillService implements OnModuleInit {
 	}
 
 	private async sweepFavicons(): Promise<number> {
+		if (!isAiEnabled()) return 0;
 		const rows = await this.db.company.findMany({
 			where: { domain: { not: null }, iconUrl: null },
 			orderBy: { createdAt: "asc" },
@@ -240,11 +259,12 @@ export class BackfillService implements OnModuleInit {
 			select: { id: true, domain: true },
 		});
 
-		if (rows.length === 0) return 0;
+		if (!isAiEnabled() || rows.length === 0) return 0;
 
 		void (async () => {
 			let resolved = 0;
 			for (const row of rows) {
+				if (!isAiEnabled()) break;
 				if (await this.favicon.backfill(row.id, row.domain)) resolved += 1;
 			}
 			this.logger.log({
@@ -255,6 +275,10 @@ export class BackfillService implements OnModuleInit {
 		})();
 
 		return rows.length;
+	}
+
+	private inertResult(): BackfillResult {
+		return { queued: 0, alreadyQueued: 0, remaining: 0, iconsResolving: 0 };
 	}
 
 	private companiesNeedingBrand(): Prisma.CompanyWhereInput {

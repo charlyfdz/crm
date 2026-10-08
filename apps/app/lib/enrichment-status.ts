@@ -27,10 +27,23 @@ export const ENRICHMENT_FACET_OPTIONS = (
 export function enrichmentPresentation(
 	status: EnrichmentStatus,
 	queued: boolean,
+	aiEnabled = true,
 ) {
+	if (!aiEnabled)
+		return {
+			label: "Investigación desactivada",
+			tone: "neutral" as StatusTone,
+			busy: false,
+		};
 	return status === "PENDING" && queued ? QUEUED : PRESENTATION[status];
 }
 
-export function isEnriching(status: EnrichmentStatus, queued = false): boolean {
-	return status === "RUNNING" || (status === "PENDING" && queued);
+export function isEnriching(
+	status: EnrichmentStatus,
+	queued = false,
+	aiEnabled = true,
+): boolean {
+	return (
+		aiEnabled && (status === "RUNNING" || (status === "PENDING" && queued))
+	);
 }

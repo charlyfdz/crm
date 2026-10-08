@@ -15,35 +15,32 @@ import {
 } from "@crm/ui/components/dropdown-menu";
 import { Icon } from "@crm/ui/components/icon";
 import { PersonAvatar } from "@crm/ui/components/person-avatar";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { toast } from "sonner";
+import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { ListSearch } from "@/components/data-table/list-search";
 import { useTableQuery } from "@/components/data-table/use-table-query";
 import { LocalRelativeTime } from "@/components/local-date-time";
-import { useCrmCache } from "@/lib/trpc/cache";
 import { useTRPC } from "@/lib/trpc/client";
 import type { RouterOutputs } from "@/lib/trpc/types";
+import { type MemberAction, MemberManagementDialog } from "./member-management";
+import {
+	memberActions,
+	MEMBER_ROLE_LABEL as ROLE_LABEL,
+} from "./member-policy";
 import { membersSearchParams } from "./members-search-params";
-
-const ROLE_LABEL = {
-	owner: "Owner",
-	admin: "Admin",
-	member: "Member",
-} as const;
 
 type Role = keyof typeof ROLE_LABEL;
 
 type MemberRow = RouterOutputs["workspace"]["members"]["rows"][number];
 
 function columns(
-	canChangeRoles: boolean,
-	onChangeRole: (member: MemberRow, role: Role) => void,
-	pending: boolean,
+	actorRole: string | null | undefined,
+	onAction: (action: MemberAction) => void,
 ): DataTableColumn<MemberRow>[] {
 	return [
 		{
 			id: "name",
-			header: "Name",
+			header: "Nombre",
 			sortable: true,
 			hideable: false,
 			width: "w-[34%]",
@@ -57,14 +54,14 @@ function columns(
 					/>
 					<span className="truncate font-medium">{row.name}</span>
 					{row.isViewer ? (
-						<span className="text-muted-foreground text-xs">You</span>
+						<span className="text-muted-foreground text-xs">Tú</span>
 					) : null}
 				</span>
 			),
 		},
 		{
 			id: "email",
-			header: "Email",
+			header: "Correo",
 			sortable: true,
 			width: "w-[32%]",
 			hideBelow: "md",
@@ -74,7 +71,7 @@ function columns(
 		},
 		{
 			id: "role",
-			header: "Role",
+			header: "Rol",
 			sortable: true,
 			width: "w-[14%]",
 			cell: (row) => (
@@ -82,9 +79,14 @@ function columns(
 			),
 		},
 		{
+			id: "status",
+			header: "Acceso",
+			cell: (row) => (row.suspendedAt ? "Suspendido" : "Activo"),
+		},
+		{
 			id: "joinedAt",
-			header: "Joined",
-			label: "Joined date",
+			header: "Alta",
+			label: "Fecha de alta",
 			sortable: true,
 			align: "right",
 			width: "w-[14%]",
@@ -97,34 +99,48 @@ function columns(
 		},
 		{
 			id: "actions",
-			header: <span className="sr-only">Actions</span>,
-			label: "Actions",
+			header: <span className="sr-only">Acciones</span>,
+			label: "Acciones",
 			hideable: false,
 			align: "right",
 			width: "w-[6%]",
 			cell: (row) =>
-				canChangeRoles ? (
+				memberActions(actorRole, row).canManage ? (
 					<DropdownMenu>
 						<DropdownMenuTrigger asChild>
-							<Button variant="ghost" size="icon" disabled={pending}>
+							<Button variant="ghost" size="icon">
 								<Icon icon={OverflowMenuHorizontal} />
-								<span className="sr-only">Change {row.name}'s role</span>
+								<span className="sr-only">
+									Administrar acceso de {row.name}
+								</span>
 							</Button>
 						</DropdownMenuTrigger>
 
 						<DropdownMenuContent align="end">
-							{(Object.keys(ROLE_LABEL) as Role[]).map((role) => (
+							{memberActions(actorRole, row).roleOptions.map((role) => (
 								<DropdownMenuItem
 									key={role}
 									data-checked={row.role === role}
 									onSelect={() => {
 										if (row.role === role) return;
-										onChangeRole(row, role);
+										onAction({ kind: "role", member: row, role });
 									}}
 								>
 									{ROLE_LABEL[role]}
 								</DropdownMenuItem>
 							))}
+							<DropdownMenuItem
+								onSelect={() => onAction({ kind: "status", member: row })}
+							>
+								{row.suspendedAt ? "Reactivar cuenta" : "Suspender cuenta"}
+							</DropdownMenuItem>
+							{memberActions(actorRole, row).canResetPassword ? (
+								<DropdownMenuItem
+									onSelect={() => onAction({ kind: "password", member: row })}
+								>
+									Recuperar contraseña local
+								</DropdownMenuItem>
+							) : null}
 						</DropdownMenuContent>
 					</DropdownMenu>
 				) : null,
@@ -134,7 +150,7 @@ function columns(
 
 export function MembersTable() {
 	const trpc = useTRPC();
-	const cache = useCrmCache();
+	const [action, setAction] = useState<MemberAction | null>(null);
 	const { query, input } = useTableQuery(membersSearchParams);
 
 	const workspace = useQuery(trpc.workspace.get.queryOptions());
@@ -143,22 +159,12 @@ export function MembersTable() {
 		placeholderData: (previous) => previous,
 	});
 
-	const setRole = useMutation(
-		trpc.workspace.setMemberRole.mutationOptions({
-			onSuccess: async () => {
-				await cache.workspace();
-				toast.success("Role changed.");
-			},
-			onError: (error) => toast.error(error.message),
-		}),
-	);
-
 	const facetCounts = members.data?.facetCounts;
 
 	const facets: DataTableFacet[] = [
 		{
 			id: "role",
-			label: "Role",
+			label: "Rol",
 			options: (Object.keys(ROLE_LABEL) as Role[]).flatMap((role) =>
 				(facetCounts?.role?.[role] ?? 0) > 0
 					? [{ value: role, label: ROLE_LABEL[role] }]
@@ -168,21 +174,25 @@ export function MembersTable() {
 	];
 
 	return (
-		<DataTable
-			query={query}
-			search={<ListSearch placeholder="Search by name or email…" />}
-			columns={columns(
-				workspace.data?.canChangeRoles ?? false,
-				(member, role) => setRole.mutate({ memberId: member.id, role }),
-				setRole.isPending,
-			)}
-			rows={members.data?.rows ?? []}
-			total={members.data?.total ?? 0}
-			facetCounts={facetCounts}
-			facets={facets}
-			getRowId={(row) => row.id}
-			loading={members.isFetching}
-			empty="Nobody matches this view."
-		/>
+		<>
+			<DataTable
+				query={query}
+				search={<ListSearch placeholder="Buscar nombre o correo…" />}
+				columns={columns(workspace.data?.viewerRole, setAction)}
+				rows={members.data?.rows ?? []}
+				total={members.data?.total ?? 0}
+				facetCounts={facetCounts}
+				facets={facets}
+				getRowId={(row) => row.id}
+				loading={members.isFetching}
+				empty="No hay personas que coincidan."
+			/>
+			{action ? (
+				<MemberManagementDialog
+					action={action}
+					onClose={() => setAction(null)}
+				/>
+			) : null}
+		</>
 	);
 }

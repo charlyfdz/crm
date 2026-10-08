@@ -2,6 +2,8 @@ import "@crm/env/load";
 
 import { PrismaPg } from "@prisma/adapter-pg";
 import { type Prisma, PrismaClient } from "./generated/prisma/client";
+import { databasePoolConfig } from "./pool-config";
+import { type ConnectionErrorKind, connectionErrorRecord } from "./pool-errors";
 
 const connectionString =
 	process.env.NODE_ENV === "test" ? testDatabase() : liveDatabase();
@@ -99,8 +101,24 @@ const logDefinitions: Prisma.LogDefinition[] = [
 ];
 
 const createPrismaClient = () => {
+	const reportConnectionError = (error: Error, kind: ConnectionErrorKind) => {
+		const record = connectionErrorRecord(error, kind);
+		try {
+			sink(record);
+		} catch {
+			consoleSink(record);
+		}
+	};
+
 	const client = new PrismaClient({
-		adapter: new PrismaPg({ connectionString }),
+		adapter: new PrismaPg(
+			{ connectionString, ...databasePoolConfig(process.env) },
+			{
+				onPoolError: (error) => reportConnectionError(error, "idle"),
+				onConnectionError: (error) =>
+					reportConnectionError(error, "checked-out"),
+			},
+		),
 		log: logDefinitions,
 	});
 

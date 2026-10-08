@@ -6,7 +6,9 @@ import {
 	verifyJwtHmac,
 	withAuthChallenges,
 } from "eve/channels/auth";
+import type { Channel } from "eve/channels";
 import { eveChannel } from "eve/channels/eve";
+import { guardAiMessageRoute } from "../lib/ai-policy";
 
 export const BRIDGE_ISSUER = "crm-app";
 export const BRIDGE_AUDIENCE = "crm-agent";
@@ -43,6 +45,13 @@ export function repFromCrm(secret: string): AuthFn<Request> {
 
 const secret = process.env.AGENT_BRIDGE_SECRET;
 
-export default eveChannel({
+const channel = eveChannel({
 	auth: [...(secret ? [repFromCrm(secret)] : []), vercelOidc(), localDev()],
 });
+
+const guardedChannel: Channel = {
+	...channel,
+	routes: channel.routes.map(guardAiMessageRoute),
+};
+
+export default guardedChannel;

@@ -4,6 +4,7 @@ import {
 	WORKSPACE_ID,
 } from "@crm/auth";
 import type { Db, Prisma } from "@crm/db";
+import { aiFeaturePolicy, isAiEnabled } from "@crm/env/features";
 import { schemas } from "@crm/validation";
 import {
 	BadRequestException,
@@ -13,6 +14,7 @@ import {
 } from "@nestjs/common";
 import { AgentAccessService } from "../agent/agent-access.service";
 import { AgentTriggerService } from "../agent/agent-trigger.service";
+import { requireApiAiEnabled } from "../agent/ai-policy";
 import { InjectDatabase } from "../database/database.constants";
 import type {
 	SlackChannelsInput,
@@ -83,13 +85,14 @@ export class SlackConnectionService {
 			account &&
 			reviewed === memberCount &&
 			matches.every((match) => match.updatedAt >= account.updatedAt);
-		if (account && !inventoryFresh) {
+		if (isAiEnabled() && account && !inventoryFresh) {
 			await this.agent.slackPeopleRequested(
 				"Match workspace members to Slack accounts by exact email",
 			);
 		}
 
 		return {
+			ai: aiFeaturePolicy(),
 			configured: isSlackConfigured(),
 			connected: Boolean(account),
 			workspace: account ? (grant?.teamName ?? null) : null,
@@ -139,16 +142,18 @@ export class SlackConnectionService {
 				match: user.slackMemberMatch,
 			})),
 			sync: syncing,
+			ai: aiFeaturePolicy(),
 		};
 	}
 
 	private async peopleSyncState(): Promise<SlackSyncState> {
+		if (!isAiEnabled()) return "idle";
 		const pending = await this.db.agentTask.findFirst({
 			where: { kind: "slack-people-match", finishedAt: null },
 			orderBy: { createdAt: "desc" },
 			select: { createdAt: true, startedAt: true, leasedUntil: true },
 		});
-		if (!pending) return "idle";
+		if (!pending || !isAiEnabled()) return "idle";
 
 		const now = Date.now();
 		const leaseHeld = pending.leasedUntil
@@ -162,6 +167,7 @@ export class SlackConnectionService {
 	}
 
 	async refreshPeople(userId: string): Promise<SlackRefreshPeopleResult> {
+		requireApiAiEnabled();
 		await this.access.assertMember(userId);
 		const account = await this.db.account.findFirst({
 			where: { providerId: "slack", accessToken: { not: null } },
@@ -175,7 +181,7 @@ export class SlackConnectionService {
 			true,
 		);
 
-		return { requested: true };
+		return { requested: isAiEnabled() };
 	}
 
 	async channels(
@@ -214,6 +220,7 @@ export class SlackConnectionService {
 		const page = rows.slice(0, take);
 
 		return {
+			ai: aiFeaturePolicy(),
 			canInviteItself: Boolean(grant),
 			sync,
 			nextCursor: rows.length > take ? (page.at(-1)?.id ?? null) : null,
@@ -229,6 +236,7 @@ export class SlackConnectionService {
 		input: SlackJoinChannelInput,
 		userId: string,
 	): Promise<SlackJoinChannelResult> {
+		requireApiAiEnabled();
 		await this.access.assertMember(userId);
 		const channel = await this.db.slackChannel.findUnique({
 			where: { id: input.channelId },
@@ -241,6 +249,7 @@ export class SlackConnectionService {
 			select: { id: true },
 		});
 		if (channel.isPrivate && !grant) {
+			requireApiAiEnabled();
 			await this.db.slackChannel.update({
 				where: { id: channel.id },
 				data: { inviteRequestedAt: new Date() },
@@ -249,13 +258,14 @@ export class SlackConnectionService {
 		}
 
 		await this.agent.slackChannelJoinRequested(channel.id, channel.name);
-		return { queued: true, alreadyJoined: false };
+		return { queued: isAiEnabled(), alreadyJoined: false };
 	}
 
 	async createChannel(
 		input: SlackCreateChannelInput,
 		userId: string,
 	): Promise<SlackCreateChannelResult> {
+		requireApiAiEnabled();
 		await this.access.assertMember(userId);
 		const existing = await this.db.slackChannel.findFirst({
 			where: { name: input.name },

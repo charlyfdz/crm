@@ -1,0 +1,4 @@
+source_id,first_name,last_name,email,company_source_id
+C-001,Lina,Prueba,lina@alba.example.test,A-001
+C-002,Óscar,Ensayo,oscar@bruma.example.test,A-002
+C-003,Nora,Demo,,A-003

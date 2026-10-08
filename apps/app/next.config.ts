@@ -1,4 +1,5 @@
 import { loadRootEnv } from "@crm/env";
+import path from "node:path";
 import type { NextConfig } from "next";
 
 loadRootEnv();
@@ -19,6 +20,8 @@ const allowedDevOrigins = (process.env.APP_URL ?? "")
 	});
 
 const nextConfig: NextConfig = {
+	output: "standalone",
+	outputFileTracingRoot: path.resolve(process.cwd(), "../.."),
 	allowedDevOrigins,
 
 	env: {

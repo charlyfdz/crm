@@ -1,6 +1,7 @@
 import { DealStage, EnrichmentStatus, RecordSource } from "@crm/db";
 import { FIELD_TYPES } from "@crm/db/fields";
 import { z } from "zod";
+import { aiPolicyOutput } from "../agent/ai-policy";
 import { bulkIdsInput } from "../crm/bulk";
 import { fieldEntity, recordFieldValues } from "../fields/fields.contracts";
 import { activityFacetInput, listInput } from "../trpc/list-input";
@@ -125,6 +126,7 @@ export const companyRowOutput = z.object({
 	industry: z.string().nullable(),
 	enrichmentStatus: companyEnrichmentStatus,
 	queued: z.boolean(),
+	ai: aiPolicyOutput,
 	source: companyRecordSource,
 	owner: ownerSummaryOutput.nullable(),
 	contactCount: z.number(),
@@ -205,6 +207,7 @@ export const companyDetailOutput = z.object({
 	contacts: z.array(companyDetailContactOutput),
 	fields: z.array(companyRecordFieldOutput),
 	queued: z.boolean(),
+	ai: aiPolicyOutput,
 	createdAt: z.string(),
 	archivedAt: z.string().nullable(),
 	enrichedAt: z.string().nullable(),

@@ -1,6 +1,7 @@
 import type { Db } from "@crm/db";
 import { mirror } from "@crm/db/blob";
 import { resolveFavicon } from "@crm/db/favicon";
+import { isAiEnabled } from "@crm/env/features";
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectDatabase } from "../database/database.constants";
 
@@ -11,12 +12,14 @@ export class FaviconService {
 	constructor(@InjectDatabase() private readonly db: Db) {}
 
 	async backfill(companyId: string, domain: string | null): Promise<boolean> {
+		if (!isAiEnabled()) return false;
 		try {
 			const resolved = await resolveFavicon(domain);
-			if (!resolved) return false;
+			if (!resolved || !isAiEnabled()) return false;
 
 			const iconUrl =
 				(await mirror(resolved, `companies/${companyId}/icon`)) ?? resolved;
+			if (!isAiEnabled()) return false;
 
 			const { count } = await this.db.company.updateMany({
 				where: { id: companyId, iconUrl: null, domain },

@@ -1,5 +1,6 @@
 import { db } from "@crm/db";
 import { readAgentModel } from "@crm/db/settings";
+import { isAiEnabled } from "@crm/env/features";
 
 export interface ModelSelection {
 	model: string;
@@ -7,6 +8,7 @@ export interface ModelSelection {
 }
 
 export async function selectedModel(): Promise<ModelSelection | null> {
+	if (!isAiEnabled()) return null;
 	try {
 		const setting = await readAgentModel(db);
 

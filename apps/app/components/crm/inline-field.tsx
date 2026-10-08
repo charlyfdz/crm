@@ -7,6 +7,7 @@ import { Input } from "@crm/ui/components/input";
 import {
 	Select,
 	SelectContent,
+	SelectGroup,
 	SelectItem,
 	SelectTrigger,
 	SelectValue,
@@ -17,6 +18,7 @@ import { Textarea } from "@crm/ui/components/textarea";
 import { cn } from "@crm/ui/lib/utils";
 import { useId, useState } from "react";
 import { PROPERTY_LABEL, PROPERTY_ROW } from "@/components/detail-sheet";
+import { useRecordReadOnly } from "./record-edit-scope";
 
 const ROW = cn(PROPERTY_ROW, "items-center");
 const LABEL = PROPERTY_LABEL;
@@ -55,6 +57,7 @@ export function InlineField({
 	render,
 	provenance,
 	suggestion,
+	readOnly = false,
 }: {
 	label: string;
 	value: string | null;
@@ -65,21 +68,27 @@ export function InlineField({
 	render?: (value: string) => React.ReactNode;
 	provenance?: React.ReactNode;
 	suggestion?: React.ReactNode;
+	readOnly?: boolean;
 }) {
+	const locked = useRecordReadOnly() || readOnly;
 	const id = useId();
 	const [editing, setEditing] = useState(false);
 	const [draft, setDraft] = useState(value ?? "");
 
 	const commit = () => {
 		setEditing(false);
-		if (draft.trim() !== (value ?? "")) onSave(draft.trim());
+		if (!locked && draft.trim() !== (value ?? "")) onSave(draft.trim());
 	};
 
 	const shown = saving ? draft.trim() : (value ?? "");
 
 	const sourced = Boolean(provenance) && !editing && shown !== "";
 
-	const control = editing ? (
+	const control = locked ? (
+		<span id={id} className="min-w-0 truncate">
+			{value ? render ? render(value) : value : <EmptyCellValue />}
+		</span>
+	) : editing ? (
 		<Input
 			id={id}
 			type={type}
@@ -167,14 +176,16 @@ export function InlineTextCell({
 	saving?: boolean;
 	placeholder?: string;
 }) {
+	const locked = useRecordReadOnly();
 	const [editing, setEditing] = useState(false);
 	const [draft, setDraft] = useState(value ?? "");
 
 	const commit = () => {
 		setEditing(false);
-		if (draft.trim() !== (value ?? "")) onSave(draft.trim());
+		if (!locked && draft.trim() !== (value ?? "")) onSave(draft.trim());
 	};
 
+	if (locked) return <span>{value || <EmptyCellValue />}</span>;
 	if (editing) {
 		return (
 			<Input
@@ -239,14 +250,16 @@ export function InlineTextArea({
 	saving?: boolean;
 	placeholder?: string;
 }) {
+	const locked = useRecordReadOnly();
 	const [editing, setEditing] = useState(false);
 	const [draft, setDraft] = useState(value ?? "");
 
 	const commit = () => {
 		setEditing(false);
-		if (draft.trim() !== (value ?? "")) onSave(draft.trim());
+		if (!locked && draft.trim() !== (value ?? "")) onSave(draft.trim());
 	};
 
+	if (locked) return <span>{value || <EmptyCellValue />}</span>;
 	if (editing) {
 		return (
 			<Textarea
@@ -309,6 +322,7 @@ export function InlineDateField({
 	saving?: boolean;
 	placeholder?: string;
 }) {
+	const locked = useRecordReadOnly();
 	const id = useId();
 
 	return (
@@ -317,13 +331,17 @@ export function InlineDateField({
 				{label}
 			</label>
 			<div className="flex min-w-0 items-center gap-1.5">
-				<DatePicker
-					id={id}
-					variant="ghost"
-					value={value?.slice(0, 10) ?? null}
-					placeholder={placeholder}
-					onChange={onSave}
-				/>
+				{locked ? (
+					<span id={id}>{value?.slice(0, 10) ?? <EmptyCellValue />}</span>
+				) : (
+					<DatePicker
+						id={id}
+						variant="ghost"
+						value={value?.slice(0, 10) ?? null}
+						placeholder={placeholder}
+						onChange={onSave}
+					/>
+				)}
 				{saving ? <Spinner /> : null}
 			</div>
 		</div>
@@ -337,14 +355,17 @@ export function InlineSelectField({
 	onSave,
 	saving = false,
 	placeholder = "None",
+	readOnly = false,
 }: {
 	label: string;
 	value: string;
-	options: { value: string; label: string }[];
+	options: { value: string; label: string; disabled?: boolean }[];
 	onSave: (next: string) => void;
 	saving?: boolean;
 	placeholder?: string;
+	readOnly?: boolean;
 }) {
+	const locked = useRecordReadOnly() || readOnly;
 	const id = useId();
 
 	return (
@@ -353,18 +374,30 @@ export function InlineSelectField({
 				{label}
 			</label>
 			<div className="flex min-w-0 items-center gap-1.5">
-				<Select value={value} onValueChange={onSave} disabled={saving}>
-					<SelectTrigger id={id} variant="ghost" className="w-full">
-						<SelectValue placeholder={placeholder} />
-					</SelectTrigger>
-					<SelectContent>
-						{options.map((option) => (
-							<SelectItem key={option.value} value={option.value}>
-								{option.label}
-							</SelectItem>
-						))}
-					</SelectContent>
-				</Select>
+				{locked ? (
+					<span id={id}>
+						{options.find((option) => option.value === value)?.label ?? value}
+					</span>
+				) : (
+					<Select value={value} onValueChange={onSave} disabled={saving}>
+						<SelectTrigger id={id} variant="ghost" className="w-full">
+							<SelectValue placeholder={placeholder} />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectGroup>
+								{options.map((option) => (
+									<SelectItem
+										key={option.value}
+										value={option.value}
+										disabled={option.disabled}
+									>
+										{option.label}
+									</SelectItem>
+								))}
+							</SelectGroup>
+						</SelectContent>
+					</Select>
+				)}
 				{saving ? <Spinner /> : null}
 			</div>
 		</div>

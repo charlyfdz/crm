@@ -5,6 +5,7 @@ import {
 	COMPANY_IMAGE_FIELDS,
 	type CompanyImageField,
 } from "@crm/db/images";
+import { isAiEnabled } from "@crm/env/features";
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectDatabase } from "../database/database.constants";
 
@@ -34,7 +35,7 @@ export class ImageMirrorService {
 	constructor(@InjectDatabase() private readonly db: Db) {}
 
 	async sweep(): Promise<ImageMirrorResult> {
-		if (!blobEnabled()) return { scanned: 0, copied: 0 };
+		if (!isAiEnabled() || !blobEnabled()) return { scanned: 0, copied: 0 };
 
 		const results = [
 			await this.sweepCompanies(),
@@ -58,6 +59,7 @@ export class ImageMirrorService {
 	}
 
 	private async sweepCompanies(): Promise<ImageMirrorResult> {
+		if (!isAiEnabled()) return { scanned: 0, copied: 0 };
 		const rows = await this.db.company.findMany({
 			where: {
 				OR: COMPANY_IMAGE_FIELDS.map(externalCompanyImage),
@@ -76,9 +78,11 @@ export class ImageMirrorService {
 		let copied = 0;
 
 		for (const row of rows) {
+			if (!isAiEnabled()) break;
 			const data: Prisma.CompanyUpdateInput = {};
 
 			for (const field of COMPANY_IMAGE_FIELDS) {
+				if (!isAiEnabled()) break;
 				const current = row[field];
 				if (!current) continue;
 
@@ -86,21 +90,23 @@ export class ImageMirrorService {
 				if (!stored || stored === current) continue;
 
 				data[field] = stored;
-				copied += 1;
 			}
 
+			if (!isAiEnabled()) break;
 			if (Object.keys(data).length === 0) continue;
 
-			await this.db.company.updateMany({
+			const { count } = await this.db.company.updateMany({
 				where: { id: row.id, ...unchanged(row) },
 				data,
 			});
+			copied += Object.keys(data).length * count;
 		}
 
 		return { scanned: rows.length, copied };
 	}
 
 	private async sweepContacts(): Promise<ImageMirrorResult> {
+		if (!isAiEnabled()) return { scanned: 0, copied: 0 };
 		const rows = await this.db.contact.findMany({
 			where: EXTERNAL_CONTACT_IMAGE,
 			orderBy: { createdAt: "asc" },
@@ -111,9 +117,11 @@ export class ImageMirrorService {
 		let copied = 0;
 
 		for (const row of rows) {
+			if (!isAiEnabled()) break;
 			if (!row.imageUrl) continue;
 
 			const stored = await mirror(row.imageUrl, `contacts/${row.id}`);
+			if (!isAiEnabled()) break;
 			if (!stored || stored === row.imageUrl) continue;
 
 			const { count } = await this.db.contact.updateMany({
@@ -128,6 +136,7 @@ export class ImageMirrorService {
 	}
 
 	private async sweepUsers(): Promise<ImageMirrorResult> {
+		if (!isAiEnabled()) return { scanned: 0, copied: 0 };
 		const rows = await this.db.user.findMany({
 			where: EXTERNAL_USER_IMAGE,
 			take: MAX_PER_SWEEP,
@@ -137,9 +146,11 @@ export class ImageMirrorService {
 		let copied = 0;
 
 		for (const row of rows) {
+			if (!isAiEnabled()) break;
 			if (!row.image) continue;
 
 			const stored = await mirror(row.image, `users/${row.id}/avatar`);
+			if (!isAiEnabled()) break;
 			if (!stored || stored === row.image) continue;
 
 			const { count } = await this.db.user.updateMany({

@@ -18,6 +18,8 @@ import {
 	completeOutput,
 	myTasksInput,
 	myTasksOutput,
+	taskUpdateInput,
+	taskUpdateOutput,
 	timelineCountsInput,
 	timelineCountsOutput,
 	timelineInput,
@@ -37,8 +39,11 @@ export class ActivitiesRouter {
 		output: timelineOutput,
 		meta: restMeta("GET", "/activities", ["Activities"]),
 	})
-	async timeline(@Input() input: z.infer<typeof timelineInput>) {
-		return this.activities.timeline(input);
+	async timeline(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input() input: z.infer<typeof timelineInput>,
+	) {
+		return this.activities.timeline(input, ctx.user.id);
 	}
 
 	@Query({
@@ -46,8 +51,11 @@ export class ActivitiesRouter {
 		output: timelineCountsOutput,
 		meta: restMeta("GET", "/activities/counts", ["Activities"]),
 	})
-	async timelineCounts(@Input() input: z.infer<typeof timelineCountsInput>) {
-		return this.activities.timelineCounts(input);
+	async timelineCounts(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input() input: z.infer<typeof timelineCountsInput>,
+	) {
+		return this.activities.timelineCounts(input, ctx.user.id);
 	}
 
 	@Query({
@@ -79,7 +87,22 @@ export class ActivitiesRouter {
 		output: completeOutput,
 		meta: restMeta("PATCH", "/activities/{id}/complete", ["Activities"]),
 	})
-	async complete(@Input() input: z.infer<typeof completeInput>) {
-		return this.activities.complete(input.id, input.completed);
+	async complete(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input() input: z.infer<typeof completeInput>,
+	) {
+		return this.activities.complete(input.id, input.completed, ctx.user.id);
+	}
+
+	@Mutation({
+		input: taskUpdateInput,
+		output: taskUpdateOutput,
+		meta: restMeta("PATCH", "/activities/{id}/task", ["Activities"]),
+	})
+	async updateTask(
+		@Ctx() ctx: AuthedTrpcContext,
+		@Input() input: z.infer<typeof taskUpdateInput>,
+	) {
+		return this.activities.updateTask(input, ctx.user.id);
 	}
 }

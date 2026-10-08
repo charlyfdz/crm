@@ -1,0 +1,19 @@
+{
+  "ejercicio": null,
+  "asercion": null,
+  "requisito_y_gate": null,
+  "revision_exacta": null,
+  "hash_artefacto": null,
+  "fecha": null,
+  "instancia_sintetica": null,
+  "actor_y_rol": null,
+  "fixture_id": null,
+  "comando_o_pasos": null,
+  "esperado": null,
+  "observado": null,
+  "referencia_evidencia_segura": null,
+  "resultado": null,
+  "pendientes": null,
+  "verificador": null,
+  "decision_humana": null
+}

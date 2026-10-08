@@ -3,6 +3,10 @@
 What this install reports about itself, in full. The decisions behind it are in
 `adrs/telemetry.md`; this file is the list.
 
+CRM Corporativo disables telemetry by default. Only `CRM_TELEMETRY_ENABLED="true"` enables reporting.
+Disable switches and `NODE_ENV=test` override that opt-in. Enabling reporting sends the events below to the inherited upstream project.
+Operators review the destination and obtain approval before enabling reporting. The legacy ADR describes upstream defaults, not this fork's policy.
+
 **Turn it off** with `CRM_TELEMETRY_DISABLED="1"` or `DO_NOT_TRACK=1` in the root `.env`, then
 restart. This file is the full account of what is sent; there is no settings page for it, so
 this is the thing to read.
