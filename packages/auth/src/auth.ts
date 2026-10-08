@@ -4,10 +4,15 @@ import { db } from "@crm/db";
 import { schemas } from "@crm/validation";
 import { type BetterAuthOptions, betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
-import { APIError } from "better-auth/api";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { genericOAuth } from "better-auth/plugins/generic-oauth";
 import { organization } from "better-auth/plugins/organization";
 import { API_KEY_EXPIRATION, API_KEY_HEADER, API_KEY_PREFIX } from "./api-keys";
+import {
+	assertBootstrapIdentityScopes,
+	assertBootstrapOrigins,
+	bootstrapTrustedOrigins,
+} from "./bootstrap-oidc";
 import { AUTH_COOKIE_PREFIX } from "./cookies";
 import { env } from "./env";
 import { ensureWorkspaceMembership } from "./organization";
@@ -116,9 +121,23 @@ export const auth = betterAuth({
 		}),
 	},
 
-	trustedOrigins: [...env.trustedOrigins],
+	trustedOrigins: bootstrapTrustedOrigins(
+		env.bootstrapOidc,
+		env.trustedOrigins,
+	),
 	hooks: {
-		before: slackConnectGuard,
+		before: createAuthMiddleware(async (ctx) => {
+			if (env.bootstrapOidc) {
+				assertBootstrapOrigins(
+					ctx.path,
+					ctx.body,
+					ctx.headers?.get("origin") ?? null,
+					env.trustedOrigins,
+				);
+				assertBootstrapIdentityScopes(ctx.path, ctx.body);
+			}
+			await slackConnectGuard(ctx);
+		}),
 	},
 
 	plugins: [
@@ -228,6 +247,7 @@ export const auth = betterAuth({
 		}),
 
 		sso({
+			defaultSSO: env.bootstrapOidc ? [env.bootstrapOidc] : undefined,
 			organizationProvisioning: { disabled: true },
 		}),
 

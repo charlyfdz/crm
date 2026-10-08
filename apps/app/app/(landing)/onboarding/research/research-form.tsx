@@ -1,6 +1,5 @@
 "use client";
 
-import { CONTEXT_DEV_SIGNUP_URL } from "@crm/db/settings";
 import { Button } from "@crm/ui/components/button";
 import {
 	Field,
@@ -14,6 +13,7 @@ import { useMutation } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useId } from "react";
 import { toast } from "sonner";
+import { CONTEXT_DEV_SIGNUP_URL } from "@/lib/context-research";
 import { useTRPC } from "@/lib/trpc/client";
 
 export function ResearchForm() {

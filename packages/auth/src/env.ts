@@ -1,4 +1,5 @@
 import "@crm/env/load";
+import { bootstrapSignInProviders, readBootstrapOidc } from "./bootstrap-oidc";
 
 const DEFAULT_API_URL = "http://localhost:3001";
 const DEFAULT_APP_URL = "http://localhost:3000";
@@ -57,6 +58,7 @@ const appUrls = (optional("APP_URL") ?? DEFAULT_APP_URL)
 const appUrl = appUrls[0] ?? DEFAULT_APP_URL;
 
 export const env = {
+	bootstrapOidc: readBootstrapOidc(process.env.CRM_BOOTSTRAP_OIDC),
 	apiUrl,
 	appUrl,
 	google: googleCredentials(),
@@ -69,6 +71,10 @@ export const env = {
 
 export function isGoogleConfigured(): boolean {
 	return env.google !== undefined;
+}
+
+export function configuredBootstrapSignInProviders() {
+	return bootstrapSignInProviders(env.bootstrapOidc);
 }
 
 export function isMicrosoftConfigured(): boolean {

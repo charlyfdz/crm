@@ -1,3 +1,4 @@
+import { ContextMode, readContextMode } from "@crm/db/settings";
 import ContextDev from "context.dev";
 import { APIError } from "context.dev/core/error";
 import { z } from "zod";
@@ -99,6 +100,13 @@ export type KeyCheck =
 const PROBE_EMAIL = "key-check@gmail.com";
 
 export async function verifyKey(key: string): Promise<KeyCheck> {
+	if (readContextMode() === ContextMode.Disabled) {
+		return {
+			outcome: "invalid",
+			reason: "Context is disabled by the operator.",
+		};
+	}
+
 	const api = new ContextDev({ apiKey: key });
 
 	try {

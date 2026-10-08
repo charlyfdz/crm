@@ -46,6 +46,10 @@ here, what do we sell.
 - **Signing in is the join; no invite flow.** `ensureWorkspaceMembership` runs in
   `databaseHooks.session.create.before` and **degrades, never throws** — a throw fails
   the session create and locks everyone out. The plugin's `invitation` table is unused.
+  Review evidence: this is an availability policy, not proof of membership-based
+  data isolation. The API auth middleware accepts a valid session with no active
+  workspace. See `docs/bootstrap-callback-review.md`. An entity admission decision
+  about blocking new access on enrollment failure is pending; current behavior remains unchanged.
 - **First account is owner**, and the hook enrols pre-existing users, oldest first.
 - **Permissions come from `@crm/auth`** — `canRenameWorkspace`, `canChangeRole`,
   `canConfigureSso`, `canManageCurrency` — enforced by the service *and* used to
@@ -100,6 +104,11 @@ every query still resolves through `WORKSPACE_ID`.
   slug `workspace.update` returns.
 
 ## SSO is a row, not a deployment
+
+Review candidate exception: `CRM_BOOTSTRAP_OIDC` supplies a deployment-owned bootstrap provider.
+It uses Better Auth's existing `defaultSSO` path, without a provider row or seeded user.
+`sso.signInOptions` advertises its public name alongside database providers.
+Settings cannot edit this deployment-owned provider. Read `docs/bootstrap-oidc.md` before use.
 
 An `ssoProvider` row via Better Auth's `sso` plugin, on Settings → SSO, because a
 self-hoster's admin cannot redeploy.

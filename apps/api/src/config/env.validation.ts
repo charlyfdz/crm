@@ -1,3 +1,4 @@
+import { ContextMode } from "@crm/db/settings";
 import { plainToInstance, Type } from "class-transformer";
 import {
 	IsEnum,
@@ -47,6 +48,13 @@ export class EnvironmentVariables {
 			'ALLOWED_SIGN_IN is required — it is the only thing deciding who can sign in. Set it to your email domain, e.g. ALLOWED_SIGN_IN="acme.com", or to a single address for a one-person install.',
 	})
 	ALLOWED_SIGN_IN!: string;
+
+	@IsOptional()
+	@IsString()
+	CRM_BOOTSTRAP_OIDC?: string;
+
+	@IsEnum(ContextMode)
+	CRM_CONTEXT_MODE: ContextMode = ContextMode.Enabled;
 
 	@IsOptional()
 	@IsString()

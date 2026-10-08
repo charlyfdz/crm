@@ -29,6 +29,10 @@ metadata. The root file's comment has the whole account.
 
 ## Required
 
+Review candidate: `CRM_BOOTSTRAP_OIDC` provides identity-only bootstrap for an empty installation.
+Read `docs/bootstrap-oidc.md` for its configuration, first-owner gate, and lifecycle.
+It does not remove the Context gate or authorize deployment.
+
 `DATABASE_URL`, `BETTER_AUTH_SECRET`, `ALLOWED_SIGN_IN`. Everything else has a
 localhost default or is genuinely optional.
 
@@ -123,6 +127,11 @@ excluded — recognising our URL for the image optimizer needs no token.
 
 ### The Context key is asked for, not configured
 
+The review candidate adds `CRM_CONTEXT_MODE=disabled` for operator-controlled use
+without Context. The default is `enabled`. Read `docs/context-mode.md` for the API,
+UI, key-preservation, rollout, and verification limits. Set the same mode on API
+and agent processes and restart them together. This is not a global agent or egress switch.
+
 **`CONTEXT_DEV_API_KEY` is not a variable here and must not become one.** The key lives
 in `AppSetting`, is asked for at `/onboarding/research`, and changes on Settings →
 General — an admin who cannot redeploy cannot set a variable.
@@ -131,14 +140,15 @@ General — an admin who cannot redeploy cannot set a variable.
   read back from a LinkedIn URL already on their record. Both capabilities in
   `agent/lib/capabilities.ts` turn on and off with this one key.
 - **An install that had the variable is asked again**: no migration, no fallback, and
-  **the gate cannot be dismissed**.
+  **the gate cannot be dismissed while Context mode is enabled**.
 - **Nothing is lost while waiting.** A keyless `brand` task settles `SKIPPED` *before*
   anything marks the row `RUNNING`, and `settle` only overwrites `RUNNING` — so the
   company stays `PENDING`, which the sweep re-queues
   (`test/keyless-brand.integration.spec.ts`).
 - **Saving the key runs the company sweep immediately** (fire-and-forget).
 - **`readContextDevKey` (`@crm/db/settings`) is the only reader**, read live with no
-  cache. An unreadable database is a capability that is off, not an exception.
+  cache. Disabled mode returns null before reading the database. The agent capability
+  wrapper catches database errors and reports the capability as off.
 - **The key is never read back** — only whether one is set, and its last four.
 - **The agent checks it, not the API** (a vendor client in the API is a bug):
   `settings.setResearchKey` calls `POST /internal/crm/verify-key` and writes unless the

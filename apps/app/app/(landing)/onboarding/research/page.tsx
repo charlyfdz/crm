@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import { AuthHeading, AuthShell } from "@/components/auth-shell";
 import { requireMailboxAccess } from "@/lib/session";
+import { getServerTrpcClient } from "@/lib/trpc/server";
 import { ResearchForm } from "./research-form";
 
 export const metadata: Metadata = {
@@ -11,6 +13,8 @@ export const instant = false;
 
 export default async function ResearchKeyPage() {
 	await requireMailboxAccess();
+	const settings = await getServerTrpcClient().settings.researchKey.query();
+	if (settings.mode === "disabled") redirect("/");
 
 	return (
 		<AuthShell>

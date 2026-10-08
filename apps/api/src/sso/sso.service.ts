@@ -1,6 +1,7 @@
 import {
 	auth,
 	canConfigureSso,
+	configuredBootstrapSignInProviders,
 	isGoogleConfigured,
 	isMicrosoftConfigured,
 	ssoCallbackBase,
@@ -126,10 +127,13 @@ export class SsoService {
 		return {
 			google: isGoogleConfigured(),
 			microsoft: isMicrosoftConfigured(),
-			providers: rows.map((row) => ({
-				providerId: row.providerId,
-				name: ssoProviderName(row.providerId),
-			})),
+			providers: [
+				...configuredBootstrapSignInProviders(),
+				...rows.map((row) => ({
+					providerId: row.providerId,
+					name: ssoProviderName(row.providerId),
+				})),
+			],
 		};
 	}
 

@@ -1,6 +1,5 @@
 "use client";
 
-import { CONTEXT_DEV_SIGNUP_URL } from "@crm/db/settings";
 import { Button } from "@crm/ui/components/button";
 import {
 	Card,
@@ -22,6 +21,7 @@ import { StatusIndicator } from "@crm/ui/components/status-indicator";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { toast } from "sonner";
+import { CONTEXT_DEV_SIGNUP_URL } from "@/lib/context-research";
 import { useCrmCache } from "@/lib/trpc/cache";
 import { useTRPC } from "@/lib/trpc/client";
 
@@ -46,6 +46,23 @@ export function ResearchKey() {
 	);
 
 	if (!key.data) return null;
+
+	if (key.data.mode === "disabled") {
+		return (
+			<Card>
+				<CardHeader>
+					<CardTitle>Context research disabled</CardTitle>
+					<CardDescription>
+						The operator disabled Context for this installation. Work with CRM
+						records manually. A Context API key is not required or used.
+					</CardDescription>
+				</CardHeader>
+				<CardContent>
+					This setting does not disable other agents or connected services.
+				</CardContent>
+			</Card>
+		);
+	}
 
 	const { configured, hint } = key.data;
 

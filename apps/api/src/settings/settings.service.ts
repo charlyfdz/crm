@@ -1,15 +1,18 @@
 import type { Db } from "@crm/db";
 import {
+	ContextMode,
 	DEFAULT_AGENT_MODEL,
 	maskKey,
 	readAgentModel,
 	readArchiveRetentionDays,
 	readContextDevKey,
+	readContextMode,
 	writeAgentModel,
 	writeArchiveRetentionDays,
 	writeContextDevKey,
 } from "@crm/db/settings";
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
+import { TRPCError } from "@trpc/server";
 import { ResearchKeyService } from "../agent/research-key.service";
 import { BackfillService } from "../backfill/backfill.service";
 import { InjectDatabase } from "../database/database.constants";
@@ -86,12 +89,20 @@ export class SettingsService {
 	}
 
 	async researchKey(): Promise<ResearchKeySettings> {
+		const mode = readContextMode();
 		const key = await readContextDevKey(this.db);
 
-		return { configured: key !== null, hint: key ? maskKey(key) : null };
+		return { mode, configured: key !== null, hint: key ? maskKey(key) : null };
 	}
 
 	async setResearchKey(apiKey: string): Promise<ResearchKeySettings> {
+		if (readContextMode() === ContextMode.Disabled) {
+			throw new TRPCError({
+				code: "FORBIDDEN",
+				message: "Context is disabled by the operator.",
+			});
+		}
+
 		const check = await this.researchKeys.verify(apiKey);
 
 		if (check.outcome === "invalid") {

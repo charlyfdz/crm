@@ -100,7 +100,9 @@ whose event never arrived, which cannot be recovered.
 `cap_agent_bridge`, `cap_cron_secret`, `cap_ai_gateway`, `cap_google_oauth`, `cap_sso_provider`,
 `cap_tracking`, `is_marketing`.
 
-Each is only whether the key is set. `cap_context_dev` is whether an `AppSetting` row holds one,
+Each is only whether the capability is available. `cap_context_dev` uses the shared
+key reader: it is false when `CRM_CONTEXT_MODE=disabled`, even if a stored key exists.
+In enabled mode it reports whether an `AppSetting` row holds one;
 `cap_sso_provider` whether an `ssoProvider` row exists, `cap_tracking` whether a tracking site id
 has been minted — never the id itself. No key, value or last-four is sent.
 

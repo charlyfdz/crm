@@ -8,7 +8,7 @@ import {
 	RecordSource,
 } from "@crm/db";
 import { RETIRED_OUTCOME } from "@crm/db/agent-tasks";
-import { readAgentModel } from "@crm/db/settings";
+import { readAgentModel, readContextDevKey } from "@crm/db/settings";
 import { CONTACT_CAP_REASON } from "@crm/db/tracking";
 import { WORKSPACE_ID } from "@crm/db/workspace";
 import {
@@ -140,7 +140,7 @@ export class RollupService {
 				this.db.member.count({ where: { organizationId: WORKSPACE_ID } }),
 				this.db.ssoProvider.count(),
 				this.postgresMajor(),
-				this.db.appSetting.findFirst({ select: { contextDevApiKey: true } }),
+				readContextDevKey(this.db),
 			]);
 
 		return {
@@ -149,7 +149,7 @@ export class RollupService {
 			members_bucket: bucket(members),
 
 			cap_perplexity: isSet("PERPLEXITY_API_KEY"),
-			cap_context_dev: Boolean(contextKey?.contextDevApiKey?.trim()),
+			cap_context_dev: contextKey !== null,
 			cap_blob: isSet("BLOB_READ_WRITE_TOKEN"),
 			cap_github: isSet("GITHUB_TOKEN"),
 			cap_redis: isSet("REDIS_URL"),

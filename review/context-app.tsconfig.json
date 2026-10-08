@@ -1,0 +1,14 @@
+{
+	"extends": "../apps/app/tsconfig.json",
+	"compilerOptions": {
+		"baseUrl": "..",
+		"typeRoots": ["../apps/app/node_modules/@types"],
+		"paths": {
+			"@/*": ["apps/app/*"],
+			"@crm/db": ["packages/db/src/index.ts"],
+			"@crm/db/*": ["packages/db/src/*.ts"],
+			"@crm/auth": ["packages/auth/src/index.ts"],
+			"@crm/auth/*": ["packages/auth/src/*.ts"]
+		}
+	}
+}

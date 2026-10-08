@@ -48,8 +48,8 @@ const workspace = (data: {
 	slug?: string;
 }) => ({ result: { data: { slug: SLUG, ...data } } });
 
-const researchKey = (configured: boolean) => ({
-	result: { data: { configured, hint: configured ? "••••9876" : null } },
+const researchKey = (configured: boolean, mode?: "enabled" | "disabled") => ({
+	result: { data: { configured, mode, hint: configured ? "••••9876" : null } },
 });
 
 /** Answers both gate procedures, counting the calls to each. */
@@ -57,11 +57,13 @@ function setup({
 	onboarded = true,
 	canRename = true,
 	configured = true,
+	mode,
 	slug = SLUG,
 }: {
 	onboarded?: boolean;
 	canRename?: boolean;
 	configured?: boolean;
+	mode?: "enabled" | "disabled";
 	slug?: string;
 } = {}) {
 	const calls = { workspace: 0, research: 0 };
@@ -73,7 +75,7 @@ function setup({
 		}
 
 		calls.research += 1;
-		return json(researchKey(configured));
+		return json(researchKey(configured, mode));
 	});
 
 	return calls;
@@ -132,6 +134,35 @@ describe("readWorkspaceGate", () => {
 });
 
 describe("readResearchGate", () => {
+	it("settles without a key only when Context is explicitly disabled", async () => {
+		answerWith(researchKey(false, "disabled"));
+		expect(await readResearchGate(request("/", [SESSION_COOKIE]))).toBe(
+			"settled",
+		);
+		answerWith(researchKey(false, "enabled"));
+		expect(await readResearchGate(request("/", [SESSION_COOKIE]))).toBe(
+			"required",
+		);
+	});
+
+	it("does not treat malformed or denied answers as an explicit disabled mode", async () => {
+		for (const data of [
+			{ mode: "disabled" },
+			{ mode: "DISABLED", configured: false },
+			{ mode: null, configured: false },
+			{ mode: "disabled", configured: "false" },
+		]) {
+			answerWith({ result: { data } });
+			expect(await readResearchGate(request("/", [SESSION_COOKIE]))).toBe(
+				"unknown",
+			);
+		}
+		answerWith(researchKey(false, "disabled"), 401);
+		expect(await readResearchGate(request("/", [SESSION_COOKIE]))).toBe(
+			"unknown",
+		);
+	});
+
 	it("is settled once a key is saved, and required until then", async () => {
 		answerWith(researchKey(true));
 		expect(await readResearchGate(request("/", [SESSION_COOKIE]))).toBe(
@@ -156,6 +187,42 @@ describe("readResearchGate", () => {
 });
 
 describe("proxy", () => {
+	it("keeps sign-in required when Context is disabled", async () => {
+		marketing("false");
+		const calls = setup({ configured: false, mode: "disabled" });
+		expect(redirectedTo(await proxy(request(`/${SLUG}/contacts`)))).toBe(
+			"/sign-in",
+		);
+		expect(calls).toEqual({ workspace: 0, research: 0 });
+	});
+
+	it("keeps workspace onboarding required when Context is disabled", async () => {
+		setup({ onboarded: false, configured: false, mode: "disabled" });
+		expect(redirectedTo(await proxy(request("/", [SESSION_COOKIE])))).toBe(
+			"/onboarding",
+		);
+	});
+
+	it("leaves the key form when Context is disabled without a key", async () => {
+		setup({ configured: false, mode: "disabled" });
+		expect(
+			redirectedTo(
+				await proxy(request("/onboarding/research", [SESSION_COOKIE])),
+			),
+		).toBe(`/${SLUG}`);
+	});
+
+	it("requires the key again when the operator re-enables Context", async () => {
+		setup({ configured: false, mode: "disabled" });
+		expect(
+			redirectedTo(await proxy(request(`/${SLUG}/contacts`, [SESSION_COOKIE]))),
+		).toBeNull();
+		setup({ configured: false, mode: "enabled" });
+		expect(
+			redirectedTo(await proxy(request(`/${SLUG}/contacts`, [SESSION_COOKIE]))),
+		).toBe("/onboarding/research");
+	});
+
 	it("shows a stranger the landing page and nothing behind it", async () => {
 		marketing("true");
 

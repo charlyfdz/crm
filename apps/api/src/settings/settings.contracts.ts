@@ -32,6 +32,7 @@ export const modelCatalogOutput = z.object({
 export type ModelCatalogResult = z.infer<typeof modelCatalogOutput>;
 
 export const researchKeyOutput = z.object({
+	mode: z.enum(["enabled", "disabled"]),
 	configured: z.boolean(),
 	hint: z.string().nullable(),
 });

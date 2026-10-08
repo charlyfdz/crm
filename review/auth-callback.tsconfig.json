@@ -1,0 +1,15 @@
+{
+	"extends": "../packages/auth/tsconfig.json",
+	"compilerOptions": {
+		"baseUrl": "..",
+		"typeRoots": ["../apps/api/node_modules/@types"],
+		"types": ["bun", "node"],
+		"paths": {
+			"@crm/db": ["packages/db/src/index.ts"],
+			"@crm/db/*": ["packages/db/src/*.ts"],
+			"@crm/auth": ["packages/auth/src/index.ts"],
+			"@crm/auth/*": ["packages/auth/src/*.ts"]
+		}
+	},
+	"include": ["../packages/auth/test/bootstrap-callback.isolated.ts"]
+}

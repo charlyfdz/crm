@@ -52,11 +52,26 @@ export async function writeAgentModel(
 	});
 }
 
-export const CONTEXT_DEV_SIGNUP_URL = "https://link.context.dev/crm";
+export enum ContextMode {
+	Enabled = "enabled",
+	Disabled = "disabled",
+}
+
+export function readContextMode(
+	value: string | undefined = process.env.CRM_CONTEXT_MODE,
+): ContextMode {
+	if (value === undefined || value === ContextMode.Enabled) {
+		return ContextMode.Enabled;
+	}
+	if (value === ContextMode.Disabled) return ContextMode.Disabled;
+	throw new Error("CRM_CONTEXT_MODE must be enabled or disabled.");
+}
 
 export const CONTEXT_DEV_DISCOUNT_CODE = "CRM";
 
 export async function readContextDevKey(db: Db): Promise<string | null> {
+	if (readContextMode() === ContextMode.Disabled) return null;
+
 	const row = await db.appSetting.findUnique({
 		where: { id: SETTINGS_ID },
 		select: { contextDevApiKey: true },
@@ -66,6 +81,10 @@ export async function readContextDevKey(db: Db): Promise<string | null> {
 }
 
 export async function writeContextDevKey(db: Db, key: string): Promise<void> {
+	if (readContextMode() === ContextMode.Disabled) {
+		throw new Error("Context is disabled by the operator.");
+	}
+
 	const contextDevApiKey = key.trim();
 
 	await db.appSetting.upsert({
